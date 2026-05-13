@@ -1,0 +1,19 @@
+# Build outputs
+driver/*.o
+driver/*.ko
+driver/*.mod
+driver/*.mod.c
+driver/*.order
+driver/*.symvers
+driver/.tmp_versions/
+app/*.o
+app/phantomfpga_app
+viewer/*.o
+viewer/phantomfpga_view
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+driver/.*.cmd
