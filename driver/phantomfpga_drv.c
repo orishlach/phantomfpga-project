@@ -1031,7 +1031,7 @@ static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev,
 	pfpga_free_descriptors(pfdev);
 
     // Allocate descriptor ring (coherent DMA):
-	ring_size = desc_count * sizeof(struct phantomfpga_sg_desc);
+	ring_size = desc_count * sizeof(struct phantomfpga_sg_desc); // 5136*8 
 	// Allocate descriptor ring in coherent DMA memory 
 	// virtual address of descriptor ring (DRIVER uses this address)
 	// pfdev->desc_ring == Kernel virtual address Used by the DRIVER / CPU
@@ -1086,7 +1086,7 @@ static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev,
 static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev)
 {
 	/*
-	 * TODO: Free SG-DMA resources
+	 * TODO: (DONE!! (Y)) Free SG-DMA resources
 	 *
 	 * Steps:
 	 *   1. Free per-descriptor buffers:
@@ -1106,6 +1106,43 @@ static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev)
 	 *      pfdev->buffers = NULL;
 	 *      pfdev->desc_count = 0;
 	 */
+	u32 i;
+	// iterate Driver tracking array:
+	// in eatch cell if virtual memory is vallied 
+	// free allocated frame that this virtual memory points to
+	if (pfdev->buffers) 
+	{
+		for (i = 0; i < pfdev->desc_count; i++) 
+		{
+				if (pfdev->buffers[i].vaddr)
+				{   //free single DMA buffer (free single 5136 bytes frame)
+				    dma_free_coherent(&pfdev->pdev->dev,
+									  pfdev->buffers[i].size,
+									  pfdev->buffers[i].vaddr,
+									  pfdev->buffers[i].dma_addr);
+				}
+		}
+		// Free buffer tracking array:
+		// in past we allocated array: pfdev->buffers = kcalloc(desc_count,....
+		// now free array this array with: kfree(pfdev->buffers);
+		kfree(pfdev->buffers);
+		pfdev->buffers = NULL;
+    }
+
+	// Free the descriptor ring array
+    if (pfdev->desc_ring) 
+	{
+		dma_free_coherent(&pfdev->pdev->dev,
+				  pfdev->desc_count * sizeof(struct phantomfpga_sg_desc),
+				  pfdev->desc_ring,
+				  pfdev->desc_ring_dma);
+
+		pfdev->desc_ring = NULL;
+		pfdev->desc_ring_dma = 0;
+	}
+    pfdev->desc_count = 0;
+    pfdev->buffer_size = 0;
+
 }
 
 /*
