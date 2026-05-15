@@ -984,6 +984,7 @@ static void pfpga_teardown_msix(struct phantomfpga_dev *pfdev)
 	 */
 }
 
+static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev);//Forward declaration.
 /*
  * Allocate descriptor ring and per-descriptor buffers.
  */
