@@ -991,7 +991,7 @@ static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev,
 				   u32 desc_count, size_t buffer_size)
 {
 	/*
-	 * TODO: Allocate SG-DMA resources
+	 * TODO (DONE!! (Y)): Allocate SG-DMA resources
 	 *
 	 * Steps:
 	 *   1. Free existing resources if any
@@ -1020,12 +1020,64 @@ static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev,
 	 *
 	 *   6. Return 0
 	 */
+	
+	
 
-	(void)desc_count;
-	(void)buffer_size;
+	size_t ring_size;
+	dma_addr_t dma_handle; // stores adress for FPGA use
+	u32 i;
 
-	dev_info(&pfdev->pdev->dev, "descriptor allocation skipped (TODO)\n");
+	// Free old descriptor ring and buffers before allocating new ones 
+	pfpga_free_descriptors(pfdev);
+
+    // Allocate descriptor ring (coherent DMA):
+	ring_size = desc_count * sizeof(struct phantomfpga_sg_desc);
+	// Allocate descriptor ring in coherent DMA memory 
+	// virtual address of descriptor ring (DRIVER uses this address)
+	// pfdev->desc_ring == Kernel virtual address Used by the DRIVER / CPU
+	// pfdev->desc_ring_dma == DMA address / bus address, Used by: the FPGA / PCIe device
+	pfdev->desc_ring = dma_alloc_coherent(&pfdev->pdev->dev,
+                                          ring_size,
+                                          &pfdev->desc_ring_dma,
+                                          GFP_KERNEL);  
+	if (!pfdev->desc_ring) // adress NULL == FAIL
+	{
+		return -ENOMEM; 
+	}
+	
+	// Store counts:
+	pfdev->desc_count = desc_count; // remember how many descriptors were allocated.
+	pfdev->buffer_size = buffer_size; // remember how large each frame buffer is.
+
+	//This line allocates a driver-side array. (FPGA can't access this array)
+	pfdev->buffers = kcalloc(desc_count, sizeof(*pfdev->buffers), GFP_KERNEL);
+	if (!pfdev->buffers) // adress NULL == FAIL
+	{
+		pfpga_free_descriptors(pfdev);
+		return -ENOMEM;
+	}
+
+	 //Allocate per-descriptor buffers (coherent DMA):
+	for (i = 0; i < desc_count; i++) {
+			pfdev->buffers[i].vaddr =
+				dma_alloc_coherent(&pfdev->pdev->dev,
+								   buffer_size,
+						           &dma_handle,
+						           GFP_KERNEL);
+
+			if (!pfdev->buffers[i].vaddr) // adress NULL == FAIL
+			{
+				pfpga_free_descriptors(pfdev);
+				return -ENOMEM;
+			}
+				 
+
+			pfdev->buffers[i].dma_addr = dma_handle;
+			pfdev->buffers[i].size = buffer_size;
+		}
+	
 	return 0;
+
 }
 
 /*
