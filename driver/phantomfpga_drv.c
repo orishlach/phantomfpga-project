@@ -264,14 +264,20 @@ static void __maybe_unused pfpga_submit_descriptors(struct phantomfpga_dev *pfde
 	 *
 	 * The device will start processing descriptors from tail to head.
 	 */
+
+
 }
 
 /*
  * Initialize all descriptors with buffer addresses.
  * Called once after buffer allocation.
  */
+// FPGA accesses only descriptor ring array 
+// (because the driver gives the FPGA the DMA address of the descriptor ring.)
+// (it doesnt know Driver tracking array exists )
 static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 {
+	
 	/*
 	 * TODO: Initialize descriptor ring
 	 *
@@ -287,6 +293,21 @@ static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 	 *   pfpga_submit_descriptors(pfdev, desc_count - 1);
 	 *   (Leave one slot empty to distinguish full from empty)
 	 */
+	u32 i;
+	// iterate every descriptor cell in descriptor ring array:
+	for (i = 0; i < pfdev->desc_count; i++) 
+	{
+		//Before giving the descriptor to the FPGA we want all flags cleared.
+		pfdev->desc_ring[i].control = 0; // because the FPGA did not complete this descriptor yet.
+		//This field tells the FPGA: How many bytes are available in this DMA buffer
+		pfdev->desc_ring[i].length = cpu_to_le32(pfdev->buffer_size); //  5136 bytes
+		pfdev->desc_ring[i].dst_addr = cpu_to_le64(pfdev->buffers[i].dma_addr); // physical address!
+		pfdev->desc_ring[i].next_desc = 0; // descriptors are stored in a continuous array
+		pfdev->desc_ring[i].reserved = 0; // means: clean unused field, do not leave garbage.
+
+		pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1);
+
+    }
 }
 
 /*
