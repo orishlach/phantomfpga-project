@@ -988,7 +988,7 @@ static int pfpga_setup_msix(struct phantomfpga_dev *pfdev)
 	
 
 	/*
-	 * TODO: Setup MSI-X interrupts
+	 * TODO: (DONE!! Y) Setup MSI-X interrupts
 	 *
 	 * Steps:
 	 *   1. Allocate MSI-X vectors (v3.0 has 3 vectors):
@@ -1140,6 +1140,23 @@ static void pfpga_teardown_msix(struct phantomfpga_dev *pfdev)
 	 *      if (pfdev->num_vectors > 0)
 	 *          pci_free_irq_vectors(pfdev->pdev);
 	 */
+
+	 // Free IRQs:
+	 //  pfdev->irq_complete = Linux IRQ number for the completion interrupt.
+	// unregisters the interrupt handler that was registered by request_irq().
+	 if (pfdev->irq_complete >= 0) {free_irq(pfdev->irq_complete, pfdev);}
+	 // pfdev->irq_error = Linux IRQ number for the error interrupt vector.
+	 if (pfdev->irq_error >= 0) {free_irq(pfdev->irq_error, pfdev);}
+	 //  pfdev->irq_no_desc = Linux IRQ number for the "no descriptors available" interrupt
+	 if (pfdev->irq_no_desc >= 0) {free_irq(pfdev->irq_no_desc, pfdev);}
+
+	 // Free vectors:
+	 if (pfdev->num_vectors > 0) {pci_free_irq_vectors(pfdev->pdev);}
+
+	 pfdev->irq_complete = -1;
+	 pfdev->irq_error = -1;
+	 pfdev->irq_no_desc = -1;
+	 pfdev->num_vectors = 0;
 }
 
 static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev);//Forward declaration.
