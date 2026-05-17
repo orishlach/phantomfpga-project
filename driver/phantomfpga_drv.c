@@ -167,6 +167,7 @@ static inline u32 pfpga_read32(struct phantomfpga_dev *pfdev, u32 offset)
 	return ioread32(pfdev->regs + offset);
 }
 
+
 static inline void pfpga_write32(struct phantomfpga_dev *pfdev, u32 offset, u32 val)
 {
 	iowrite32(val, pfdev->regs + offset);
@@ -264,6 +265,17 @@ static void __maybe_unused pfpga_submit_descriptors(struct phantomfpga_dev *pfde
 	 *
 	 * The device will start processing descriptors from tail to head.
 	 */
+	
+	// DRIVER writes some cells in descriptor ring array
+	// wmb() defends compiler and CPU reordering
+	// ensures all write operations before it are completed
+	// before write operations after it are allowed to continue.
+	// DRIVER writes DESC_HEAD register (in FPGA)
+	 wmb(); //write memory barrier.
+	// Update the driver's local HEAD index.
+	pfdev->desc_head = (pfdev->desc_head + count) & (pfdev->desc_count - 1);
+	// Write the new HEAD value into the FPGA register.
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, pfdev->desc_head);
 
 
 }
@@ -305,9 +317,9 @@ static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 		pfdev->desc_ring[i].next_desc = 0; // descriptors are stored in a continuous array
 		pfdev->desc_ring[i].reserved = 0; // means: clean unused field, do not leave garbage.
 
-		pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1);
-
     }
+		pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1); // updates FPGA head register
+
 }
 
 /*
