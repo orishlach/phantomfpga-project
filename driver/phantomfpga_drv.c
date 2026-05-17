@@ -985,8 +985,7 @@ static const struct file_operations phantomfpga_fops = {
  */
 static int pfpga_setup_msix(struct phantomfpga_dev *pfdev)
 {
-	struct pci_dev *pdev = pfdev->pdev;
-	int ret;
+	
 
 	/*
 	 * TODO: Setup MSI-X interrupts
@@ -1018,15 +1017,106 @@ static int pfpga_setup_msix(struct phantomfpga_dev *pfdev)
 	 *   4. Return 0 on success
 	 */
 
-	(void)pdev;
-	(void)ret;
-	pfdev->num_vectors = 0;
-	pfdev->irq_complete = -1;
-	pfdev->irq_error = -1;
-	pfdev->irq_no_desc = -1;
+	struct pci_dev *pdev = pfdev->pdev;
+	int ret;
 
-	dev_info(&pdev->dev, "MSI-X setup skipped (TODO)\n");
+	// Allocate MSI-X vectors (v3.0 has 3 vectors):
+	ret = pci_alloc_irq_vectors(pdev, PHANTOMFPGA_MSIX_VECTORS,
+	                            PHANTOMFPGA_MSIX_VECTORS, PCI_IRQ_MSIX);
+
+	// If MSI-X allocation fails, fall back to one MSI/legacy interrupt.
+	// meaning Something happened in the device (could be:Complete/ Error/ No_desc  )
+	// it does not directly tell you which thing happened.
+	// so Driver reads IRQ_STATUS register in FPGA to find out
+	if (ret < 0) 
+	{
+		ret = pci_alloc_irq_vectors(pdev, 1, 1,
+					    PCI_IRQ_MSI | PCI_IRQ_LEGACY);
+		if (ret < 0) {return ret;}
+			
+	}
+	// Save the number of interrupt vectors that Linux actually allocated.
+    pfdev->num_vectors = ret;
+
+	// Convert device MSI-X vector indexes into Linux IRQ numbers.
+	// Vector 0 is always used, both in MSI-X mode and fallback mode.
+	pfdev->irq_complete = pci_irq_vector(pdev, PHANTOMFPGA_MSIX_VEC_COMPLETE);
+
+	// Vector 1 exists only if we successfully allocated more than one vector.
+	if (pfdev->num_vectors > 1)
+		{pfdev->irq_error = pci_irq_vector(pdev, PHANTOMFPGA_MSIX_VEC_ERROR);}
+	else
+		{pfdev->irq_error = -1;}
+
+	// Vector 2 exists only if we successfully allocated more than two vectors.
+	if (pfdev->num_vectors > 2)
+		{pfdev->irq_no_desc = pci_irq_vector(pdev, PHANTOMFPGA_MSIX_VEC_NO_DESC);}
+	else
+		{pfdev->irq_no_desc = -1;}
+
+	// Register Complete IRQ handler.
+	// This IRQ always exists because vector/index 0 is used in both MSI-X and fallback mode.
+	ret = request_irq(pfdev->irq_complete,
+			  pfpga_irq_complete,
+			  0,
+			  DRIVER_NAME "-complete",
+			  pfdev);
+		if (ret) 
+		{
+			pci_free_irq_vectors(pdev);
+			pfdev->num_vectors = 0;
+			pfdev->irq_complete = -1;
+			pfdev->irq_error = -1;
+			pfdev->irq_no_desc = -1;
+			return ret;
+	    }
+
+	// Register Error IRQ handler only if vector 1 exists.
+	if (pfdev->num_vectors > 1) 
+	{
+		ret = request_irq(pfdev->irq_error,
+				  pfpga_irq_error,
+				  0,
+				  DRIVER_NAME "-error",
+				  pfdev);
+		if (ret) 
+		{
+			free_irq(pfdev->irq_complete, pfdev);
+			pci_free_irq_vectors(pdev);
+			pfdev->num_vectors = 0;
+			pfdev->irq_complete = -1;
+			pfdev->irq_error = -1;
+			pfdev->irq_no_desc = -1;
+			return ret;
+		}
+	}
+
+	// Register No_desc IRQ handler only if vector 2 exists.
+	if (pfdev->num_vectors > 2) 
+	{
+		ret = request_irq(pfdev->irq_no_desc,
+				  pfpga_irq_no_desc,
+				  0,
+				  DRIVER_NAME "-no-desc",
+				  pfdev);
+			if (ret) 
+			{
+				free_irq(pfdev->irq_error, pfdev);
+				free_irq(pfdev->irq_complete, pfdev);
+				pci_free_irq_vectors(pdev);
+				pfdev->num_vectors = 0;
+				pfdev->irq_complete = -1;
+				pfdev->irq_error = -1;
+				pfdev->irq_no_desc = -1;
+				return ret;
+		    }
+	}
+
+	dev_info(&pdev->dev, "interrupt setup done, vectors=%d\n",
+		 pfdev->num_vectors);
+
 	return 0;
+	
 }
 
 /*
