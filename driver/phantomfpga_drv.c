@@ -208,6 +208,9 @@ static inline bool pfpga_validate_frame_crc(const void *frame)
  * Configure the descriptor ring address in the device.
  * Called after descriptor ring allocation.
  */
+// This function programs the FPGA with the descriptor ring DMA address,
+// the descriptor ring size, and resets both driver-side and FPGA-side
+// ring indexes to the initial empty state.
 static void __maybe_unused pfpga_configure_desc_ring(struct phantomfpga_dev *pfdev)
 {
 	/*
@@ -222,6 +225,38 @@ static void __maybe_unused pfpga_configure_desc_ring(struct phantomfpga_dev *pfd
 	 *
 	 * Hint: Use lower_32_bits() and upper_32_bits() macros
 	 */
+	u32 ring_lo;
+	u32 ring_hi;
+
+	// Split the descriptor ring DMA address into low/high 32-bit parts.
+	// The FPGA register interface stores the 64-bit address in two registers.
+	ring_lo = lower_32_bits(pfdev->desc_ring_dma);
+	ring_hi = upper_32_bits(pfdev->desc_ring_dma);
+	// Write the LOW 32 bits of the descriptor ring DMA address
+    // into the FPGA DESC_RING_LO register.
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_LO, ring_lo); //  write to register in little-endian
+	// Write the HIGH 32 bits of the descriptor ring DMA address
+	// into the FPGA DESC_RING_HI register.
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_HI, ring_hi);
+	// Write the number of descriptors into the FPGA DESC_RING_SIZE register.
+	// (write to register in little-endian)
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_SIZE, pfdev->desc_count);
+
+	// Reset driver-side ring indexes.
+	pfdev->desc_head = 0;
+	pfdev->desc_tail = 0;
+	pfdev->shadow_tail = 0;
+	// consumer is a driver-side software index.
+	// "Which completed descriptor should I give to userspace next?"
+	pfdev->consumer = 0;
+
+	// Reset FPGA-side ring indexes. 
+	// at start Descriptor Ring is empty (HEAD = TAIL = 0 )
+	// HEAD = FPGA can consume from TAIL until HEAD-1 index inclusive (in descriptor ring array)
+	// TAIL = index where FPGA starts consuming from (consuming is filling up 5136 bytes buffer frame)
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, 0);
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_TAIL, 0);
+
 }
 
 /*
@@ -253,7 +288,7 @@ static void __maybe_unused pfpga_apply_config(struct phantomfpga_dev *pfdev)
 static void __maybe_unused pfpga_submit_descriptors(struct phantomfpga_dev *pfdev, u32 count)
 {
 	/*
-	 * TODO: Submit descriptors to device
+	 * TODO: (DONE Y) Submit descriptors to device
 	 *
 	 * Steps:
 	 *   1. Memory barrier to ensure descriptor writes are visible:
@@ -291,7 +326,7 @@ static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 {
 	
 	/*
-	 * TODO: Initialize descriptor ring
+	 * TODO: (DONE! Y) Initialize descriptor ring
 	 *
 	 * For each descriptor i in [0, desc_count):
 	 *   1. Clear control flags: desc_ring[i].control = 0
