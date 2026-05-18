@@ -212,7 +212,8 @@ protected:
 	void frame_delay() override
 	{
 		/* --- YOUR CODE HERE --- */
-		usleep(1000000 / frame::DEFAULT_FPS); /* placeholder */
+		struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
+		nanosleep(&ts, nullptr);
 		/* --- END YOUR CODE --- */
 	}
 
