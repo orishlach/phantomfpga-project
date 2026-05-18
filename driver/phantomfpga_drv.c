@@ -440,7 +440,7 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 	u32 irq_status;
 
 	/*
-	 * TODO: Handle completion interrupt
+	 * TODO: (DONE!! Y) Handle completion interrupt
 	 *
 	 * Steps:
 	 *   1. Read IRQ_STATUS register
@@ -460,9 +460,36 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 	 *   wake_up_interruptible(&pfdev->wait_queue);
 	 */
 
-	(void)irq_status;
-	(void)pfdev;
-	return IRQ_NONE;  /* Change to IRQ_HANDLED when implemented */
+    // Read the interrupt status register from the FPGA.
+	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
+	
+    // Check if the COMPLETE bit is really set.
+    // If not, this interrupt is not for this handler.
+	if (!(irq_status & PHANTOMFPGA_IRQ_COMPLETE)) {	return IRQ_NONE;}
+
+	// PHANTOMFPGA_REG_IRQ_STATUS is a W1C status register
+	// In a W1C register we use: W1C = Write 1 To Clear
+	// write 1 to  COMPLETE bit to clear it!!.
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_COMPLETE);
+
+	spin_lock(&pfdev->lock);
+	// Read the FPGA DESC_TAIL register.
+	// FPGA can fill FRAMES from index TAIL to HEAD -1 inclusive
+	// Driver can take frames (5136) from CONSUMER to TAIL -1 inclusive
+	// THEN - Driver can produce new descriptors from HEAD to CONSUMER -1 inclusive
+	pfdev->shadow_tail = pfpga_read32(pfdev, PHANTOMFPGA_REG_DESC_TAIL);
+	pfdev->irq_count++;
+	spin_unlock(&pfdev->lock);
+	
+	//  Wake up processes that are sleeping on ( userspace processes waiting in)
+	//  read() poll() epoll()
+	//   we wake them here Because the interrupt handler just updated:
+	// pfdev->shadow_tail
+	// That means: FPGA completed one or more descriptors.
+	//  So now there may be completed frames ready for userspace.
+	wake_up_interruptible(&pfdev->wait_queue);
+
+	return IRQ_HANDLED;
 }
 
 /*
@@ -1125,7 +1152,7 @@ static int pfpga_setup_msix(struct phantomfpga_dev *pfdev)
 static void pfpga_teardown_msix(struct phantomfpga_dev *pfdev)
 {
 	/*
-	 * TODO: Release MSI-X resources
+	 * TODO: (DONE!! Y) Release MSI-X resources
 	 *
 	 * Steps:
 	 *   1. Free IRQs:
