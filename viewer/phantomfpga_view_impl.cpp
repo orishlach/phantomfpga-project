@@ -184,9 +184,16 @@ protected:
 	 */
 	void display_frame() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement display_frame()\n");
-		/* --- END YOUR CODE --- */
+		terminal_.cursor_home();
+
+		fwrite(
+			frame_buffer_.data() + frame::DATA_OFFSET,
+			1,
+			frame::DATA_SIZE,
+			stdout
+		);
+
+		fflush(stdout);
 	}
 
 	/*
