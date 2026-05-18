@@ -230,9 +230,15 @@ protected:
 	 */
 	void print_stats() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement print_stats()\n");
-		/* --- END YOUR CODE --- */
+		fprintf(stderr,
+			"Frames received: %lu\n"
+			"Frames dropped: %lu\n"
+			"CRC errors: %lu\n"
+			"Magic errors: %lu\n",
+			stats_.frames_received,
+			stats_.frames_dropped,
+			stats_.crc_errors,
+			stats_.magic_errors);
 	}
 
 	/*
