@@ -57,7 +57,6 @@ protected:
 	bool receive_frame() override
 	{
 		/* --- YOUR CODE HERE --- */
-<<<<<<< HEAD
 		uint32_t length;
 
 		if (!client_.read_exact(reinterpret_cast<uint8_t*>(&length),
@@ -87,10 +86,6 @@ protected:
 
 		return true;
 		
-=======
-		fprintf(stderr, "TODO: Implement receive_frame()\n");
-		return false;
->>>>>>> origin/main
 		/* --- END YOUR CODE --- */
 	}
 
@@ -111,7 +106,6 @@ protected:
 	 */
 	bool validate_frame() override
 	{
-<<<<<<< HEAD
 		const FrameHeader* hdr =
 			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
 
@@ -138,12 +132,6 @@ protected:
 		}
 
 		return true;
-=======
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement validate_frame()\n");
-		return false;
-		/* --- END YOUR CODE --- */
->>>>>>> origin/main
 	}
 
 	/*
@@ -162,9 +150,24 @@ protected:
 	 */
 	void check_sequence() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement check_sequence()\n");
-		/* --- END YOUR CODE --- */
+		const FrameHeader* header =
+			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
+
+		if (stats_.last_sequence != (uint32_t)-1)
+		{
+			uint32_t expected_seq =
+				(stats_.last_sequence + 1) % frame::COUNT;
+
+			if (header->sequence != expected_seq)
+			{
+				uint32_t dropped =
+					(header->sequence - expected_seq + frame::COUNT) % frame::COUNT;
+
+				stats_.frames_dropped += dropped;
+			}
+		}
+
+		stats_.last_sequence = header->sequence;
 	}
 
 	/*
