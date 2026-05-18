@@ -106,11 +106,32 @@ protected:
 	 */
 	bool validate_frame() override
 	{
-		/* --- YOUR CODE HERE --- */
-		if(reinterpret_cast<FrameHeader*>(frame_buffer_.data())
-		fprintf(stderr, "TODO: Implement validate_frame()\n");
-		return false;
-		/* --- END YOUR CODE --- */
+		const FrameHeader* hdr =
+			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
+
+		if (hdr->magic != frame::MAGIC)
+		{
+			std::cerr << "Invalid magic" << std::endl;
+			++stats_.magic_errors;
+			return false;
+		}
+
+		const uint32_t crc_res =
+			CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET);
+
+		uint32_t crc_curr;
+		memcpy(&crc_curr,
+			frame_buffer_.data() + frame::CRC_OFFSET,
+			sizeof(uint32_t));
+
+		if (crc_curr != crc_res)
+		{
+			std::cerr << "CRC failed" << std::endl;
+			++stats_.crc_errors;
+			return false;
+		}
+
+		return true;
 	}
 
 	/*
