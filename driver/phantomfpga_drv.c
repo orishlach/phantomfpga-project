@@ -512,9 +512,31 @@ static irqreturn_t __maybe_unused pfpga_irq_error(int irq, void *data)
 	 *   4. Wake up waiters so they can handle the condition
 	 *   5. Return IRQ_HANDLED
 	 */
+	 //store the value read from the FPGA IRQ_STATUS register
+	 u32 irq_status;
 
-	(void)pfdev;
-	return IRQ_NONE;
+	 //Read the FPGA interrupt status register.
+	 irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
+
+	// Check if the ERROR bit is really set.
+    // If the ERROR bit is not set,
+    // this interrupt does not belong to this handler.
+	if (!(irq_status & PHANTOMFPGA_IRQ_ERROR)) {return IRQ_NONE;}
+
+	// IRQ_STATUS is W1C: Write 1 To Clear.
+	// Write 1 to the ERROR bit to clear it.
+    // "I saw the ERROR interrupt.
+    // Clear the ERROR pending bit now."
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ERROR);
+    // Print a warning to the kernel log.
+	dev_warn(&pfdev->pdev->dev, "error interrupt: status=0x%x\n", irq_status);
+
+	// Wake up userspace waiters.
+	// If read(), poll(), or epoll() is sleeping,
+	// wake it up so it can notice that an error happened.
+	wake_up_interruptible(&pfdev->wait_queue);
+
+	return IRQ_HANDLED;
 }
 
 /*
