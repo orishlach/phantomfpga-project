@@ -57,6 +57,7 @@ protected:
 	bool receive_frame() override
 	{
 		/* --- YOUR CODE HERE --- */
+<<<<<<< HEAD
 		uint32_t length;
 
 		if (!client_.read_exact(reinterpret_cast<uint8_t*>(&length),
@@ -86,6 +87,10 @@ protected:
 
 		return true;
 		
+=======
+		fprintf(stderr, "TODO: Implement receive_frame()\n");
+		return false;
+>>>>>>> origin/main
 		/* --- END YOUR CODE --- */
 	}
 
@@ -106,6 +111,7 @@ protected:
 	 */
 	bool validate_frame() override
 	{
+<<<<<<< HEAD
 		const FrameHeader* hdr =
 			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
 
@@ -132,6 +138,12 @@ protected:
 		}
 
 		return true;
+=======
+		/* --- YOUR CODE HERE --- */
+		fprintf(stderr, "TODO: Implement validate_frame()\n");
+		return false;
+		/* --- END YOUR CODE --- */
+>>>>>>> origin/main
 	}
 
 	/*
