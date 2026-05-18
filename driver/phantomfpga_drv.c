@@ -488,7 +488,7 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 	// That means: FPGA completed one or more descriptors.
 	//  So now there may be completed frames ready for userspace.
 	wake_up_interruptible(&pfdev->wait_queue);
-
+	(void)irq;
 	return IRQ_HANDLED;
 }
 
@@ -535,22 +535,21 @@ static irqreturn_t __maybe_unused pfpga_irq_error(int irq, void *data)
 	// If read(), poll(), or epoll() is sleeping,
 	// wake it up so it can notice that an error happened.
 	wake_up_interruptible(&pfdev->wait_queue);
-
+	(void)irq;
 	return IRQ_HANDLED;
-}
+} 
 
 /*
  * MSI-X interrupt handler for no-descriptor condition (vector 2).
  *
- * Called when device has frames to send but no descriptors available.
+ * Called when device (FPGA) has frames to send but no descriptors available.
  * This means backpressure - consumer isn't keeping up with frame rate.
  */
 static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 {
-	struct phantomfpga_dev *pfdev = data;
 
 	/*
-	 * TODO: Handle no-descriptor interrupt
+	 * TODO: (DONE!! Y) Handle no-descriptor interrupt
 	 *
 	 * Steps:
 	 *   1. Read and clear IRQ_STATUS (PHANTOMFPGA_IRQ_NO_DESC bit)
@@ -563,8 +562,27 @@ static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 	 * or reduce frame rate. Check STAT_FRAMES_DROP for total drops.
 	 */
 
-	(void)pfdev;
-	return IRQ_NONE;
+	struct phantomfpga_dev *pfdev = data;
+	// Read the FPGA interrupt status register.
+	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
+
+	// Check if the NO_DESC bit is really set.
+    // If the NO_DESC bit is not set,
+    // this interrupt does not belong to this handler.
+	if (!(irq_status & PHANTOMFPGA_IRQ_NO_DESC)){return IRQ_NONE;}
+
+	// IRQ_STATUS is W1C: Write 1 To Clear.
+	// Write 1 to the NO_DESC bit to clear it.
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_NO_DESC);
+
+	// Print a debug message to the kernel log.
+	dev_dbg(&pfdev->pdev->dev, "no descriptors available\n");
+	// Wake up userspace waiters.
+	wake_up_interruptible(&pfdev->wait_queue);
+
+	(void)irq;
+	 return IRQ_HANDLED;
+	
 }
 
 /* ------------------------------------------------------------------------ */
