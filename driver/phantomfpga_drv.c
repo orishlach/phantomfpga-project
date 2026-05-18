@@ -562,6 +562,8 @@ static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 	 * or reduce frame rate. Check STAT_FRAMES_DROP for total drops.
 	 */
 
+	u32 irq_status;
+	
 	struct phantomfpga_dev *pfdev = data;
 	// Read the FPGA interrupt status register.
 	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
