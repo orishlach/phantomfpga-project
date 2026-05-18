@@ -57,8 +57,35 @@ protected:
 	bool receive_frame() override
 	{
 		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement receive_frame()\n");
-		return false;
+		uint32_t length;
+
+		if (!client_.read_exact(reinterpret_cast<uint8_t*>(&length),
+                        sizeof(length),
+                        &running_))
+		{
+			std::cerr << "Failed to read frame length" << std::endl;
+			return false;
+		}
+
+		length = ntohl(length);
+
+		if (length != frame::SIZE)
+		{
+			std::cerr << "Invalid frame length: " << length
+          << " (expected " << frame::SIZE << ")" << std::endl;
+			return false;
+		}
+
+		if (!client_.read_exact(frame_buffer_.data(),
+                        frame::SIZE,
+                        &running_))
+		{
+			std::cerr << "Failed reading the frame" << std::endl;
+			return false;
+		}
+
+		return true;
+		
 		/* --- END YOUR CODE --- */
 	}
 
@@ -80,6 +107,7 @@ protected:
 	bool validate_frame() override
 	{
 		/* --- YOUR CODE HERE --- */
+		if(reinterpret_cast<FrameHeader*>(frame_buffer_.data())
 		fprintf(stderr, "TODO: Implement validate_frame()\n");
 		return false;
 		/* --- END YOUR CODE --- */
