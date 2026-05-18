@@ -50,7 +50,7 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION("3.0");
 
 /* Driver constants */
-#define DRIVER_NAME             "phantomfpga"
+#define DRIVER_NAME "phantomfpga"
 #define PHANTOMFPGA_MAX_DEVICES 4
 
 /* Buffer size for frames (frame size + completion writeback) */
@@ -68,10 +68,11 @@ MODULE_VERSION("3.0");
  * We track both the virtual address (for driver/userspace) and DMA address
  * (for the device).
  */
-struct phantomfpga_buffer {
-	void *vaddr;              /* Kernel virtual address */
-	dma_addr_t dma_addr;      /* DMA address for device */
-	size_t size;              /* Buffer size in bytes */
+struct phantomfpga_buffer
+{
+	void *vaddr;		 /* Kernel virtual address */
+	dma_addr_t dma_addr; /* DMA address for device */
+	size_t size;		 /* Buffer size in bytes */
 };
 
 /* ------------------------------------------------------------------------ */
@@ -87,36 +88,37 @@ struct phantomfpga_buffer {
  * v3.0 changes: Simplified for fixed-size frame streaming.
  * No more variable packet sizes or header profiles.
  */
-struct phantomfpga_dev {
+struct phantomfpga_dev
+{
 	/* PCI device reference */
 	struct pci_dev *pdev;
 
 	/* BAR0 register mapping */
-	void __iomem *regs;         /* Kernel virtual address of BAR0 */
+	void __iomem *regs;			/* Kernel virtual address of BAR0 */
 	resource_size_t regs_start; /* Physical address of BAR0 */
-	resource_size_t regs_len;   /* Length of BAR0 region */
+	resource_size_t regs_len;	/* Length of BAR0 region */
 
 	/* Descriptor ring (SG-DMA) */
-	struct phantomfpga_sg_desc *desc_ring;  /* Descriptor ring virtual addr */
-	dma_addr_t desc_ring_dma;               /* Descriptor ring DMA addr */
-	u32 desc_count;                         /* Number of descriptors */
+	struct phantomfpga_sg_desc *desc_ring; /* Descriptor ring virtual addr */
+	dma_addr_t desc_ring_dma;			   /* Descriptor ring DMA addr */
+	u32 desc_count;						   /* Number of descriptors */
 
 	/* Per-descriptor buffers */
-	struct phantomfpga_buffer *buffers;     /* Array of buffer tracking */
-	size_t buffer_size;                     /* Size of each buffer */
+	struct phantomfpga_buffer *buffers; /* Array of buffer tracking */
+	size_t buffer_size;					/* Size of each buffer */
 
 	/* Configuration */
-	u32 frame_rate;             /* Frames per second (1-60) */
-	u16 irq_coalesce_count;     /* IRQ after N completions */
-	u16 irq_coalesce_timeout;   /* IRQ timeout in microseconds */
-	bool configured;            /* Has SET_CFG been called? */
-	bool streaming;             /* Is device currently streaming? */
+	u32 frame_rate;			  /* Frames per second (1-60) */
+	u16 irq_coalesce_count;	  /* IRQ after N completions */
+	u16 irq_coalesce_timeout; /* IRQ timeout in microseconds */
+	bool configured;		  /* Has SET_CFG been called? */
+	bool streaming;			  /* Is device currently streaming? */
 
 	/* Ring indices (driver-side shadow) */
-	u32 desc_head;              /* Head: driver writes to submit */
-	u32 desc_tail;              /* Tail: device updates on completion */
-	u32 shadow_tail;            /* Completion pointer (set by IRQ handler) */
-	u32 consumer;               /* Consumer pointer (advanced by read/ioctl) */
+	u32 desc_head;	 /* Head: driver writes to submit */
+	u32 desc_tail;	 /* Tail: device updates on completion */
+	u32 shadow_tail; /* Completion pointer (set by IRQ handler) */
+	u32 consumer;	 /* Consumer pointer (advanced by read/ioctl) */
 
 	/* Statistics (driver-side) */
 	u64 frames_consumed;
@@ -125,21 +127,21 @@ struct phantomfpga_dev {
 	u32 crc_errors;
 
 	/* Synchronization */
-	spinlock_t lock;            /* Protects indices and state */
-	struct mutex ioctl_lock;    /* Serializes ioctl operations */
+	spinlock_t lock;			  /* Protects indices and state */
+	struct mutex ioctl_lock;	  /* Serializes ioctl operations */
 	wait_queue_head_t wait_queue; /* For poll/blocking read */
 
 	/* Character device */
 	struct cdev cdev;
 	dev_t devno;
-	struct device *dev;         /* sysfs device */
+	struct device *dev; /* sysfs device */
 	int minor;
 
 	/* MSI-X vectors */
 	int num_vectors;
-	int irq_complete;           /* IRQ number for completion vector */
-	int irq_error;              /* IRQ number for error vector */
-	int irq_no_desc;            /* IRQ number for no-descriptor vector */
+	int irq_complete; /* IRQ number for completion vector */
+	int irq_error;	  /* IRQ number for error vector */
+	int irq_no_desc;  /* IRQ number for no-descriptor vector */
 };
 
 /* ------------------------------------------------------------------------ */
@@ -148,12 +150,14 @@ struct phantomfpga_dev {
 
 static struct class *phantomfpga_class;
 static dev_t phantomfpga_devno;
-static DEFINE_IDA(phantomfpga_ida);  /* Minor number allocator */
+static DEFINE_IDA(phantomfpga_ida); /* Minor number allocator */
 
 /* PCI device ID table */
 static const struct pci_device_id phantomfpga_pci_ids[] = {
-	{ PCI_DEVICE(PHANTOMFPGA_VENDOR_ID, PHANTOMFPGA_DEVICE_ID) },
-	{ 0, }  /* Terminator */
+	{PCI_DEVICE(PHANTOMFPGA_VENDOR_ID, PHANTOMFPGA_DEVICE_ID)},
+	{
+		0,
+	} /* Terminator */
 };
 MODULE_DEVICE_TABLE(pci, phantomfpga_pci_ids);
 
@@ -226,21 +230,21 @@ static void __maybe_unused pfpga_configure_desc_ring(struct phantomfpga_dev *pfd
 /*
  * Apply frame streaming configuration to device registers.
  * Called from SET_CFG ioctl after validation.
+ * Frame size is fixed at 5120 bytes, no configuration needed.
  */
 static void __maybe_unused pfpga_apply_config(struct phantomfpga_dev *pfdev)
 {
-	/*
-	 * TODO: Write configuration to device registers
-	 *
-	 * Steps:
-	 *   1. Write pfdev->frame_rate to PHANTOMFPGA_REG_FRAME_RATE
-	 *   2. Write IRQ coalesce settings to PHANTOMFPGA_REG_IRQ_COALESCE:
-	 *      Use phantomfpga_irq_coalesce_pack(count, timeout)
-	 *   3. Enable all interrupts in PHANTOMFPGA_REG_IRQ_MASK:
-	 *      PHANTOMFPGA_IRQ_ALL
-	 *
-	 * Note: Frame size is fixed at 5120 bytes, no configuration needed.
-	 */
+	u32 irq_coalesce;
+
+	/* Write pfdev->frame_rate */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_FRAME_RATE, pfdev->frame_rate);
+
+	/* Write IRQ coalesce settings */
+	irq_coalesce = phantomfpga_irq_coalesce_pack(pfdev->irq_coalesce_count, pfdev->irq_coalesce_timeout);
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_COALESCE, irq_coalesce);
+
+	/* Enable all interrupts */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_MASK, PHANTOMFPGA_IRQ_ALL);
 }
 
 /*
@@ -291,50 +295,68 @@ static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 
 /*
  * Start frame streaming.
+ * Locking: Called with ioctl_lock held
  */
 static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 {
-	/*
-	 * TODO: Start the device streaming
-	 *
-	 * Steps:
-	 *   1. Check pfdev->configured - return -EINVAL if not configured
-	 *   2. Check pfdev->streaming - return -EBUSY if already streaming
-	 *   3. Reset indices: desc_head = desc_tail = shadow_tail = consumer = 0
-	 *   4. Write 0 to PHANTOMFPGA_REG_DESC_HEAD and DESC_TAIL
-	 *   5. Re-initialize descriptors (clear COMPLETED flags)
-	 *   6. Submit all available descriptors
-	 *   7. Clear any pending IRQs: write PHANTOMFPGA_IRQ_ALL to IRQ_STATUS
-	 *   8. Write CTRL register:
-	 *      PHANTOMFPGA_CTRL_RUN | PHANTOMFPGA_CTRL_IRQ_EN
-	 *   9. Set pfdev->streaming = true
-	 *  10. Return 0
-	 *
-	 * Locking: Called with ioctl_lock held
-	 */
-	return -ENOTSUPP;  /* Remove this when implemented */
+	/* Require configured */
+	if (!pfdev->configured)
+		return -EINVAL;
+
+	/* Reject if already streaming */
+	if (pfdev->streaming)
+		return -EBUSY;
+
+	/* Reset indices in driver */
+	pfdev->desc_head = 0;
+	pfdev->desc_tail = 0;
+	pfdev->shadow_tail = 0;
+	pfdev->consumer = 0;
+
+	/* Reset indices in device */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, 0);
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_TAIL, 0);
+
+	/* Re-initialize descriptors */
+	pfpga_init_descriptors(pfdev);
+
+	/* Submit all available descriptors */
+	pfpga_submit_descriptors(pfdev);
+
+	/* Clear any pending IRQs */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ALL);
+
+	/* Start with interrupts */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, PHANTOMFPGA_CTRL_RUN | PHANTOMFPGA_CTRL_IRQ_EN);
+
+	pfdev->streaming = true;
+
+	return 0;
 }
 
 /*
  * Stop frame streaming.
+ * Safe to call stop even if not streaming
+ * Locking: Called with ioctl_lock held
  */
 static int pfpga_stop_streaming(struct phantomfpga_dev *pfdev)
 {
-	/*
-	 * TODO: Stop the device streaming
-	 *
-	 * Steps:
-	 *   1. Read current CTRL register value
-	 *   2. Clear PHANTOMFPGA_CTRL_RUN bit
-	 *   3. Write back to CTRL register
-	 *   4. Set pfdev->streaming = false
-	 *   5. Wake up any waiters (they'll get EOF or EAGAIN)
-	 *   6. Return 0
-	 *
-	 * Note: It's safe to call stop even if not streaming
-	 *
-	 * Locking: Called with ioctl_lock held
-	 */
+	u32 ctrl;
+
+	/* Read current CTRL register value */
+	ctrl = pfpga_read32(pfdev, PHANTOMFPGA_REG_CTRL);
+
+	/* Clear PHANTOMFPGA_CTRL_RUN bit */
+	ctrl &= ~PHANTOMFPGA_CTRL_RUN;
+
+	/* Write back to CTRL register */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, ctrl);
+
+	pfdev->streaming = false;
+
+	/* Wake up any waiters */
+	wake_up_interruptible(&pfdev->wait_queue);
+
 	return 0;
 }
 
@@ -394,7 +416,7 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 
 	(void)irq_status;
 	(void)pfdev;
-	return IRQ_NONE;  /* Change to IRQ_HANDLED when implemented */
+	return IRQ_NONE; /* Change to IRQ_HANDLED when implemented */
 }
 
 /*
@@ -497,7 +519,7 @@ static int pfpga_release(struct inode *inode, struct file *file)
  * and copies to userspace.
  */
 static ssize_t pfpga_read(struct file *file, char __user *buf,
-			  size_t count, loff_t *ppos)
+						  size_t count, loff_t *ppos)
 {
 	struct phantomfpga_dev *pfdev = file->private_data;
 	unsigned long flags;
@@ -588,7 +610,7 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
  * The device produces frames, it doesn't consume them.
  */
 static ssize_t pfpga_write(struct file *file, const char __user *buf,
-			   size_t count, loff_t *ppos)
+						   size_t count, loff_t *ppos)
 {
 	return -EPERM;
 }
@@ -677,7 +699,7 @@ static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 	(void)size;
 	(void)offset;
 	dev_dbg(&pfdev->pdev->dev, "mmap request: size=%zu offset=%lu\n",
-		size, offset);
+			size, offset);
 
 	return -ENOTSUPP;
 }
@@ -712,49 +734,50 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	mutex_lock(&pfdev->ioctl_lock);
 
-	switch (cmd) {
+	switch (cmd)
+	{
 	case PHANTOMFPGA_IOCTL_SET_CFG:
-		{
-			struct phantomfpga_config cfg;
+	{
+		struct phantomfpga_config cfg;
 
-			/*
-			 * TODO: Handle SET_CFG for frame streaming
-			 *
-			 * Steps:
-			 *   1. Check !pfdev->streaming (return -EBUSY if streaming)
-			 *   2. copy_from_user(&cfg, argp, sizeof(cfg))
-			 *   3. Validate parameters:
-			 *      - desc_count in [MIN_DESC_COUNT, MAX_DESC_COUNT]
-			 *      - desc_count is power of 2
-			 *      - frame_rate in [MIN_FRAME_RATE, MAX_FRAME_RATE]
-			 *   4. Calculate buffer size:
-			 *      buffer_size = PHANTOMFPGA_FRAME_SIZE + PHANTOMFPGA_COMPL_SIZE
-			 *   5. Allocate/reallocate descriptor ring and buffers if needed
-			 *   6. Store configuration in pfdev
-			 *   7. Call pfpga_apply_config()
-			 *   8. Call pfpga_configure_desc_ring()
-			 *   9. Call pfpga_init_descriptors()
-			 *  10. Set pfdev->configured = true
-			 *  11. Return 0
-			 */
-			(void)cfg;
-			ret = -ENOTSUPP;
-		}
-		break;
+		/*
+		 * TODO: Handle SET_CFG for frame streaming
+		 *
+		 * Steps:
+		 *   1. Check !pfdev->streaming (return -EBUSY if streaming)
+		 *   2. copy_from_user(&cfg, argp, sizeof(cfg))
+		 *   3. Validate parameters:
+		 *      - desc_count in [MIN_DESC_COUNT, MAX_DESC_COUNT]
+		 *      - desc_count is power of 2
+		 *      - frame_rate in [MIN_FRAME_RATE, MAX_FRAME_RATE]
+		 *   4. Calculate buffer size:
+		 *      buffer_size = PHANTOMFPGA_FRAME_SIZE + PHANTOMFPGA_COMPL_SIZE
+		 *   5. Allocate/reallocate descriptor ring and buffers if needed
+		 *   6. Store configuration in pfdev
+		 *   7. Call pfpga_apply_config()
+		 *   8. Call pfpga_configure_desc_ring()
+		 *   9. Call pfpga_init_descriptors()
+		 *  10. Set pfdev->configured = true
+		 *  11. Return 0
+		 */
+		(void)cfg;
+		ret = -ENOTSUPP;
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_GET_CFG:
-		{
-			struct phantomfpga_config cfg = {
-				.desc_count = pfdev->desc_count,
-				.frame_rate = pfdev->frame_rate,
-				.irq_coalesce_count = pfdev->irq_coalesce_count,
-				.irq_coalesce_timeout = pfdev->irq_coalesce_timeout,
-			};
+	{
+		struct phantomfpga_config cfg = {
+			.desc_count = pfdev->desc_count,
+			.frame_rate = pfdev->frame_rate,
+			.irq_coalesce_count = pfdev->irq_coalesce_count,
+			.irq_coalesce_timeout = pfdev->irq_coalesce_timeout,
+		};
 
-			if (copy_to_user(argp, &cfg, sizeof(cfg)))
-				ret = -EFAULT;
-		}
-		break;
+		if (copy_to_user(argp, &cfg, sizeof(cfg)))
+			ret = -EFAULT;
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_START:
 		ret = pfpga_start_streaming(pfdev);
@@ -765,127 +788,128 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case PHANTOMFPGA_IOCTL_GET_STATS:
-		{
-			struct phantomfpga_stats stats;
-			unsigned long flags;
+	{
+		struct phantomfpga_stats stats;
+		unsigned long flags;
 
-			/*
-			 * TODO: Get statistics
-			 *
-			 * Steps:
-			 *   1. Read device registers:
-			 *      - PHANTOMFPGA_REG_STAT_FRAMES_TX
-			 *      - PHANTOMFPGA_REG_STAT_FRAMES_DROP
-			 *      - PHANTOMFPGA_REG_STAT_BYTES_LO/HI
-			 *      - PHANTOMFPGA_REG_STAT_ERRORS
-			 *      - PHANTOMFPGA_REG_STAT_DESC_COMPL
-			 *      - PHANTOMFPGA_REG_CURRENT_FRAME
-			 *      - PHANTOMFPGA_REG_DESC_HEAD/TAIL
-			 *      - PHANTOMFPGA_REG_STATUS
-			 *   2. Fill stats structure
-			 *   3. Add driver-side stats under lock
-			 *   4. copy_to_user
-			 */
-			memset(&stats, 0, sizeof(stats));
+		/*
+		 * TODO: Get statistics
+		 *
+		 * Steps:
+		 *   1. Read device registers:
+		 *      - PHANTOMFPGA_REG_STAT_FRAMES_TX
+		 *      - PHANTOMFPGA_REG_STAT_FRAMES_DROP
+		 *      - PHANTOMFPGA_REG_STAT_BYTES_LO/HI
+		 *      - PHANTOMFPGA_REG_STAT_ERRORS
+		 *      - PHANTOMFPGA_REG_STAT_DESC_COMPL
+		 *      - PHANTOMFPGA_REG_CURRENT_FRAME
+		 *      - PHANTOMFPGA_REG_DESC_HEAD/TAIL
+		 *      - PHANTOMFPGA_REG_STATUS
+		 *   2. Fill stats structure
+		 *   3. Add driver-side stats under lock
+		 *   4. copy_to_user
+		 */
+		memset(&stats, 0, sizeof(stats));
 
-			spin_lock_irqsave(&pfdev->lock, flags);
-			stats.frames_consumed = pfdev->frames_consumed;
-			stats.bytes_consumed = pfdev->bytes_consumed;
-			stats.irq_count = pfdev->irq_count;
-			stats.crc_errors = pfdev->crc_errors;
-			spin_unlock_irqrestore(&pfdev->lock, flags);
+		spin_lock_irqsave(&pfdev->lock, flags);
+		stats.frames_consumed = pfdev->frames_consumed;
+		stats.bytes_consumed = pfdev->bytes_consumed;
+		stats.irq_count = pfdev->irq_count;
+		stats.crc_errors = pfdev->crc_errors;
+		spin_unlock_irqrestore(&pfdev->lock, flags);
 
-			/* Read device stats */
-			stats.frames_produced = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_FRAMES_TX);
-			stats.frames_dropped = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_FRAMES_DROP);
-			stats.desc_completed = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_DESC_COMPL);
-			stats.errors = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_ERRORS);
-			stats.current_frame = pfpga_read32(pfdev, PHANTOMFPGA_REG_CURRENT_FRAME);
-			stats.status = pfpga_read32(pfdev, PHANTOMFPGA_REG_STATUS);
+		/* Read device stats */
+		stats.frames_produced = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_FRAMES_TX);
+		stats.frames_dropped = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_FRAMES_DROP);
+		stats.desc_completed = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_DESC_COMPL);
+		stats.errors = pfpga_read32(pfdev, PHANTOMFPGA_REG_STAT_ERRORS);
+		stats.current_frame = pfpga_read32(pfdev, PHANTOMFPGA_REG_CURRENT_FRAME);
+		stats.status = pfpga_read32(pfdev, PHANTOMFPGA_REG_STATUS);
 
-			if (copy_to_user(argp, &stats, sizeof(stats)))
-				ret = -EFAULT;
-		}
-		break;
+		if (copy_to_user(argp, &stats, sizeof(stats)))
+			ret = -EFAULT;
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_RESET_STATS:
-		{
-			unsigned long flags;
+	{
+		unsigned long flags;
 
-			spin_lock_irqsave(&pfdev->lock, flags);
-			pfdev->frames_consumed = 0;
-			pfdev->bytes_consumed = 0;
-			pfdev->irq_count = 0;
-			pfdev->crc_errors = 0;
-			spin_unlock_irqrestore(&pfdev->lock, flags);
-		}
-		break;
+		spin_lock_irqsave(&pfdev->lock, flags);
+		pfdev->frames_consumed = 0;
+		pfdev->bytes_consumed = 0;
+		pfdev->irq_count = 0;
+		pfdev->crc_errors = 0;
+		spin_unlock_irqrestore(&pfdev->lock, flags);
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_GET_BUFFER_INFO:
+	{
+		struct phantomfpga_buffer_info info;
+
+		if (!pfdev->configured)
 		{
-			struct phantomfpga_buffer_info info;
-
-			if (!pfdev->configured) {
-				ret = -EINVAL;
-				break;
-			}
-
-			memset(&info, 0, sizeof(info));
-			info.buffer_size = pfdev->buffer_size;
-			info.buffer_count = pfdev->desc_count;
-			info.total_size = pfdev->buffer_size * pfdev->desc_count;
-			info.frame_size = PHANTOMFPGA_FRAME_SIZE;
-
-			if (copy_to_user(argp, &info, sizeof(info)))
-				ret = -EFAULT;
+			ret = -EINVAL;
+			break;
 		}
-		break;
+
+		memset(&info, 0, sizeof(info));
+		info.buffer_size = pfdev->buffer_size;
+		info.buffer_count = pfdev->desc_count;
+		info.total_size = pfdev->buffer_size * pfdev->desc_count;
+		info.frame_size = PHANTOMFPGA_FRAME_SIZE;
+
+		if (copy_to_user(argp, &info, sizeof(info)))
+			ret = -EFAULT;
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_CONSUME_FRAME:
-		{
-			unsigned long flags;
+	{
+		unsigned long flags;
 
-			/*
-			 * TODO: Mark frame consumed (mmap mode)
-			 *
-			 * Used when userspace reads directly from mmap'd buffer
-			 * and signals completion via ioctl instead of read().
-			 *
-			 * Steps:
-			 *   1. spin_lock_irqsave
-			 *   2. Check if there are completed descriptors
-			 *   3. Reset descriptor for reuse
-			 *   4. Advance consumer
-			 *   5. Increment frames_consumed
-			 *   6. spin_unlock_irqrestore
-			 *   7. Resubmit one descriptor
-			 *   8. Return 0
-			 */
-			(void)flags;
-			ret = -ENOTSUPP;
-		}
-		break;
+		/*
+		 * TODO: Mark frame consumed (mmap mode)
+		 *
+		 * Used when userspace reads directly from mmap'd buffer
+		 * and signals completion via ioctl instead of read().
+		 *
+		 * Steps:
+		 *   1. spin_lock_irqsave
+		 *   2. Check if there are completed descriptors
+		 *   3. Reset descriptor for reuse
+		 *   4. Advance consumer
+		 *   5. Increment frames_consumed
+		 *   6. spin_unlock_irqrestore
+		 *   7. Resubmit one descriptor
+		 *   8. Return 0
+		 */
+		(void)flags;
+		ret = -ENOTSUPP;
+	}
+	break;
 
 	case PHANTOMFPGA_IOCTL_SET_FAULT:
-		{
-			struct phantomfpga_fault_cfg fault;
+	{
+		struct phantomfpga_fault_cfg fault;
 
-			/*
-			 * TODO: Configure fault injection
-			 *
-			 * Steps:
-			 *   1. copy_from_user(&fault, argp, sizeof(fault))
-			 *   2. Write fault.inject_flags to PHANTOMFPGA_REG_FAULT_INJECT
-			 *   3. Write fault.fault_rate to PHANTOMFPGA_REG_FAULT_RATE
-			 *   4. Return 0
-			 *
-			 * This is for testing - lets you simulate CRC corruption,
-			 * dropped frames, and sequence number skips.
-			 */
-			(void)fault;
-			ret = -ENOTSUPP;
-		}
-		break;
+		/*
+		 * TODO: Configure fault injection
+		 *
+		 * Steps:
+		 *   1. copy_from_user(&fault, argp, sizeof(fault))
+		 *   2. Write fault.inject_flags to PHANTOMFPGA_REG_FAULT_INJECT
+		 *   3. Write fault.fault_rate to PHANTOMFPGA_REG_FAULT_RATE
+		 *   4. Return 0
+		 *
+		 * This is for testing - lets you simulate CRC corruption,
+		 * dropped frames, and sequence number skips.
+		 */
+		(void)fault;
+		ret = -ENOTSUPP;
+	}
+	break;
 
 	default:
 		ret = -ENOTTY;
@@ -897,15 +921,15 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 /* File operations structure */
 static const struct file_operations phantomfpga_fops = {
-	.owner          = THIS_MODULE,
-	.open           = pfpga_open,
-	.release        = pfpga_release,
-	.read           = pfpga_read,
-	.write          = pfpga_write,
-	.poll           = pfpga_poll,
-	.mmap           = pfpga_mmap,
+	.owner = THIS_MODULE,
+	.open = pfpga_open,
+	.release = pfpga_release,
+	.read = pfpga_read,
+	.write = pfpga_write,
+	.poll = pfpga_poll,
+	.mmap = pfpga_mmap,
 	.unlocked_ioctl = pfpga_ioctl,
-	.compat_ioctl   = compat_ptr_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -988,7 +1012,7 @@ static void pfpga_teardown_msix(struct phantomfpga_dev *pfdev)
  * Allocate descriptor ring and per-descriptor buffers.
  */
 static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev,
-				   u32 desc_count, size_t buffer_size)
+								   u32 desc_count, size_t buffer_size)
 {
 	/*
 	 * TODO: Allocate SG-DMA resources
@@ -1065,7 +1089,7 @@ static int pfpga_create_cdev(struct phantomfpga_dev *pfdev)
 	int ret;
 
 	minor = ida_alloc_max(&phantomfpga_ida, PHANTOMFPGA_MAX_DEVICES - 1,
-			      GFP_KERNEL);
+						  GFP_KERNEL);
 	if (minor < 0)
 		return minor;
 
@@ -1080,8 +1104,9 @@ static int pfpga_create_cdev(struct phantomfpga_dev *pfdev)
 		goto err_ida;
 
 	pfdev->dev = device_create(phantomfpga_class, &pfdev->pdev->dev,
-				   pfdev->devno, pfdev, DRIVER_NAME "%d", minor);
-	if (IS_ERR(pfdev->dev)) {
+							   pfdev->devno, pfdev, DRIVER_NAME "%d", minor);
+	if (IS_ERR(pfdev->dev))
+	{
 		ret = PTR_ERR(pfdev->dev);
 		goto err_cdev;
 	}
@@ -1110,7 +1135,7 @@ static void pfpga_destroy_cdev(struct phantomfpga_dev *pfdev)
  * PCI probe function - called when kernel finds matching device.
  */
 static int phantomfpga_probe(struct pci_dev *pdev,
-			     const struct pci_device_id *id)
+							 const struct pci_device_id *id)
 {
 	struct phantomfpga_dev *pfdev;
 	u32 dev_id, dev_ver;
@@ -1132,14 +1157,16 @@ static int phantomfpga_probe(struct pci_dev *pdev,
 
 	/* Enable PCI device */
 	ret = pci_enable_device(pdev);
-	if (ret) {
+	if (ret)
+	{
 		dev_err(&pdev->dev, "failed to enable PCI device\n");
 		goto err_free;
 	}
 
 	/* Request BAR0 region */
 	ret = pci_request_region(pdev, 0, DRIVER_NAME);
-	if (ret) {
+	if (ret)
+	{
 		dev_err(&pdev->dev, "failed to request BAR0\n");
 		goto err_disable;
 	}
@@ -1148,22 +1175,24 @@ static int phantomfpga_probe(struct pci_dev *pdev,
 	pfdev->regs_start = pci_resource_start(pdev, 0);
 	pfdev->regs_len = pci_resource_len(pdev, 0);
 	pfdev->regs = pci_iomap(pdev, 0, pfdev->regs_len);
-	if (!pfdev->regs) {
+	if (!pfdev->regs)
+	{
 		dev_err(&pdev->dev, "failed to map BAR0\n");
 		ret = -ENOMEM;
 		goto err_release;
 	}
 
 	dev_info(&pdev->dev, "BAR0 mapped: phys=0x%llx len=%llu virt=%p\n",
-		 (unsigned long long)pfdev->regs_start,
-		 (unsigned long long)pfdev->regs_len,
-		 pfdev->regs);
+			 (unsigned long long)pfdev->regs_start,
+			 (unsigned long long)pfdev->regs_len,
+			 pfdev->regs);
 
 	/* Verify device identity */
 	dev_id = pfpga_read32(pfdev, PHANTOMFPGA_REG_DEV_ID);
-	if (dev_id != PHANTOMFPGA_DEV_ID_VAL) {
+	if (dev_id != PHANTOMFPGA_DEV_ID_VAL)
+	{
 		dev_err(&pdev->dev, "unexpected device ID: 0x%08x (expected 0x%08x)\n",
-			dev_id, PHANTOMFPGA_DEV_ID_VAL);
+				dev_id, PHANTOMFPGA_DEV_ID_VAL);
 		ret = -ENODEV;
 		goto err_unmap;
 	}
@@ -1172,9 +1201,10 @@ static int phantomfpga_probe(struct pci_dev *pdev,
 	dev_ver = pfpga_read32(pfdev, PHANTOMFPGA_REG_DEV_VER);
 	dev_info(&pdev->dev, "device ID: 0x%08x version: 0x%08x\n", dev_id, dev_ver);
 
-	if (dev_ver < PHANTOMFPGA_DEV_VER) {
+	if (dev_ver < PHANTOMFPGA_DEV_VER)
+	{
 		dev_warn(&pdev->dev, "device version older than driver expects, "
-			 "things might get interesting\n");
+							 "things might get interesting\n");
 	}
 
 	/* Enable bus mastering for DMA */
@@ -1182,29 +1212,35 @@ static int phantomfpga_probe(struct pci_dev *pdev,
 
 	/* Set DMA mask - try 64-bit, fall back to 32-bit */
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-	if (ret) {
+	if (ret)
+	{
 		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-		if (ret) {
+		if (ret)
+		{
 			dev_err(&pdev->dev, "failed to set DMA mask\n");
 			goto err_unmap;
 		}
 		dev_info(&pdev->dev, "using 32-bit DMA\n");
-	} else {
+	}
+	else
+	{
 		dev_info(&pdev->dev, "using 64-bit DMA\n");
 	}
 
 	/* Setup MSI-X interrupts */
 	ret = pfpga_setup_msix(pfdev);
-	if (ret) {
+	if (ret)
+	{
 		dev_err(&pdev->dev, "failed to setup MSI-X: %d\n", ret);
 		goto err_unmap;
 	}
 
 	/* Allocate default descriptors and buffers */
 	ret = pfpga_alloc_descriptors(pfdev,
-				      PHANTOMFPGA_DEFAULT_DESC_COUNT,
-				      PHANTOMFPGA_BUFFER_SIZE);
-	if (ret) {
+								  PHANTOMFPGA_DEFAULT_DESC_COUNT,
+								  PHANTOMFPGA_BUFFER_SIZE);
+	if (ret)
+	{
 		dev_err(&pdev->dev, "failed to allocate descriptors: %d\n", ret);
 		goto err_msix;
 	}
@@ -1214,7 +1250,8 @@ static int phantomfpga_probe(struct pci_dev *pdev,
 
 	/* Create character device */
 	ret = pfpga_create_cdev(pfdev);
-	if (ret) {
+	if (ret)
+	{
 		dev_err(&pdev->dev, "failed to create char device: %d\n", ret);
 		goto err_desc;
 	}
@@ -1256,7 +1293,8 @@ static void phantomfpga_remove(struct pci_dev *pdev)
 	dev_info(&pdev->dev, "removing PhantomFPGA device\n");
 
 	/* Stop streaming if active */
-	if (pfdev->streaming) {
+	if (pfdev->streaming)
+	{
 		mutex_lock(&pfdev->ioctl_lock);
 		pfpga_stop_streaming(pfdev);
 		mutex_unlock(&pfdev->ioctl_lock);
@@ -1272,7 +1310,8 @@ static void phantomfpga_remove(struct pci_dev *pdev)
 	pfpga_teardown_msix(pfdev);
 
 	/* Unmap and release BAR0 */
-	if (pfdev->regs) {
+	if (pfdev->regs)
+	{
 		pci_iounmap(pdev, pfdev->regs);
 		pfdev->regs = NULL;
 	}
@@ -1289,10 +1328,10 @@ static void phantomfpga_remove(struct pci_dev *pdev)
 
 /* PCI driver structure */
 static struct pci_driver phantomfpga_pci_driver = {
-	.name     = DRIVER_NAME,
+	.name = DRIVER_NAME,
 	.id_table = phantomfpga_pci_ids,
-	.probe    = phantomfpga_probe,
-	.remove   = phantomfpga_remove,
+	.probe = phantomfpga_probe,
+	.remove = phantomfpga_remove,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -1306,27 +1345,30 @@ static int __init phantomfpga_init(void)
 	pr_info("PhantomFPGA v3.0 driver initializing\n");
 
 	ret = alloc_chrdev_region(&phantomfpga_devno, 0, PHANTOMFPGA_MAX_DEVICES,
-				  DRIVER_NAME);
-	if (ret) {
+							  DRIVER_NAME);
+	if (ret)
+	{
 		pr_err("failed to allocate chrdev region: %d\n", ret);
 		return ret;
 	}
 
 	phantomfpga_class = class_create(DRIVER_NAME);
-	if (IS_ERR(phantomfpga_class)) {
+	if (IS_ERR(phantomfpga_class))
+	{
 		ret = PTR_ERR(phantomfpga_class);
 		pr_err("failed to create device class: %d\n", ret);
 		goto err_chrdev;
 	}
 
 	ret = pci_register_driver(&phantomfpga_pci_driver);
-	if (ret) {
+	if (ret)
+	{
 		pr_err("failed to register PCI driver: %d\n", ret);
 		goto err_class;
 	}
 
 	pr_info("PhantomFPGA v3.0 driver initialized (major=%d)\n",
-		MAJOR(phantomfpga_devno));
+			MAJOR(phantomfpga_devno));
 	return 0;
 
 err_class:
