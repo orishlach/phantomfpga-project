@@ -1,320 +1,283 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * PhantomFPGA Viewer - YOUR IMPLEMENTATION
+ * PhantomFPGA Viewer - Infrastructure (COMPLETE)
  *
- * This is the file you need to edit. Implement the 7 TODO methods below
- * to receive, validate, display, and record frames from the device.
- *
- * Read phantomfpga_view.h for the class interface and frame constants.
- *
- * Available members from the base class (PhantomFpgaViewer):
- *   client_        :  TcpClient with read_exact(buf, len, &running_)
- *   terminal_      :  Terminal with clear_screen(), cursor_home(), etc.
- *   frame_buffer_  :  std::array<uint8_t, 5120> for the current frame
- *   stats_         :  ViewerStats (frames_received, frames_dropped, etc.)
- *   running_       :  volatile bool, goes false on Ctrl+C
- *   record_path_   :  filename from --record flag (empty = no recording)
- *
- * Frame layout (frame::SIZE = 5120 bytes):
- *   Offset 0:    FrameHeader (16 bytes) :  magic, sequence, reserved
- *   Offset 16:   Payload (4995 bytes)  :  frame data
- *   Offset 5116: CRC32 (4 bytes)       :  IEEE 802.3
- *
- * Utility:
- *   CRC32::compute(data, len)  :  returns uint32_t
+ * This file contains all the provided infrastructure code. Trainees
+ * should read this to understand the framework, but should NOT edit it.
+ * All trainee work goes in phantomfpga_view_impl.cpp.
  */
 
 #include "phantomfpga_view.h"
 
-#include <arpa/inet.h>
-#include <cstring>
+#include <cerrno>
+#include <csignal>
+#include <cstdlib>
 
-/* ----------------------------------------------------------------------- */
-/* PhantomFpgaViewerImpl: YOUR CODE GOES HERE                              */
-/*                                                                         */
-/* Implement the 7 TODO methods below. The base class handles TCP          */
-/* connection, terminal setup, signal handling, and the main loop.         */
-/* ----------------------------------------------------------------------- */
+/* ======================================================================== */
+/* CRC32 Implementation                                                     */
+/* ======================================================================== */
 
-class PhantomFpgaViewerImpl : public PhantomFpgaViewer {
-protected:
-
-	/*
-	 * TODO 1: Receive one frame from the server
-	 *
-	 * The wire protocol sends: 4-byte length (network order) + frame data.
-	 *
-	 * Steps:
-	 * 1. Read 4 bytes into a uint32_t using client_.read_exact()
-	 * 2. Convert from network byte order: ntohl()
-	 * 3. Verify the length == frame::SIZE (5120)
-	 * 4. Read frame::SIZE bytes into frame_buffer_.data()
-	 *
-	 * Returns true on success, false on error or disconnect.
-	 *
-	 * Hint: client_.read_exact(buf, len, &running_) handles partial
-	 * reads and EINTR for you.
-	 */
-	bool receive_frame() override
-	{
-		/* --- YOUR CODE HERE --- */
-		uint32_t length;
-
-		if (!client_.read_exact(reinterpret_cast<uint8_t*>(&length),
-                        sizeof(length),
-                        &running_))
-		{
-			std::cerr << "Failed to read frame length" << std::endl;
-			return false;
-		}
-
-		length = ntohl(length);
-
-		if (length != frame::SIZE)
-		{
-			std::cerr << "Invalid frame length: " << length
-          << " (expected " << frame::SIZE << ")" << std::endl;
-			return false;
-		}
-
-		if (!client_.read_exact(frame_buffer_.data(),
-                        frame::SIZE,
-                        &running_))
-		{
-			std::cerr << "Failed reading the frame" << std::endl;
-			return false;
-		}
-
-		if (!record_path_.empty())
-		{
-			if (record_file_ == nullptr)
-			{
-				record_file_ = fopen(record_path_.c_str(), "wb");
-
-				if (record_file_ == nullptr)
-				{
-					std::cerr << "Failed to open record file" << std::endl;
-				}
-			}
-			if (record_file_ != nullptr )
-			{
-				size_t written  = fwrite(frame_buffer_.data(),
-					1,
-					frame::SIZE,
-					record_file_);
-
-				if (written != frame::SIZE) {
-					std::cerr << "Failed writing frame" << std::endl;
-				}
-			}
-
-		}
-
-		return true;
-		
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 2: Validate the frame
-	 *
-	 * Check two things:
-	 * 1. Magic number: cast frame_buffer_.data() to a FrameHeader* and
-	 *    check that hdr->magic == frame::MAGIC
-	 *    Increment stats_.magic_errors on failure.
-	 *
-	 * 2. CRC32: compute CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET)
-	 *    Compare with the 4-byte CRC stored at frame::CRC_OFFSET
-	 *    (read it as a uint32_t from frame_buffer_[frame::CRC_OFFSET])
-	 *    Increment stats_.crc_errors on mismatch.
-	 *
-	 * Returns true if valid, false otherwise.
-	 */
-	bool validate_frame() override
-	{
-		const FrameHeader* hdr =
-			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
-
-		if (hdr->magic != frame::MAGIC)
-		{
-			std::cerr << "Invalid magic" << std::endl;
-			++stats_.magic_errors;
-			return false;
-		}
-
-		const uint32_t crc_res =
-			CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET);
-
-		uint32_t crc_curr;
-		memcpy(&crc_curr,
-			frame_buffer_.data() + frame::CRC_OFFSET,
-			sizeof(uint32_t));
-
-		if (crc_curr != crc_res)
-		{
-			std::cerr << "CRC failed" << std::endl;
-			++stats_.crc_errors;
-			return false;
-		}
-
-		return true;
-	}
-
-	/*
-	 * TODO 3: Check sequence continuity
-	 *
-	 * Detect dropped frames by looking at sequence number gaps.
-	 *
-	 * Steps:
-	 * 1. Get the sequence number from the FrameHeader
-	 * 2. If this isn't the first frame (stats_.last_sequence != -1):
-	 *    a. Calculate expected = (stats_.last_sequence + 1) % frame::COUNT
-	 *    b. If current != expected:
-	 *       dropped = (current - expected + frame::COUNT) % frame::COUNT
-	 *       stats_.frames_dropped += dropped
-	 * 3. Update stats_.last_sequence
-	 */
-	void check_sequence() override
-	{
-		const FrameHeader* header =
-			reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
-
-		if (stats_.last_sequence != (uint32_t)-1)
-		{
-			uint32_t expected_seq =
-				(stats_.last_sequence + 1) % frame::COUNT;
-
-			if (header->sequence != expected_seq)
-			{
-				uint32_t dropped =
-					(header->sequence - expected_seq + frame::COUNT) % frame::COUNT;
-
-				stats_.frames_dropped += dropped;
-			}
-		}
-
-		stats_.last_sequence = header->sequence;
-	}
-
-	/*
-	 * TODO 4: Display the frame
-	 *
-	 * The ASCII frame data starts at frame::DATA_OFFSET (16 bytes in)
-	 * and is frame::DATA_SIZE (4995) bytes long. It already contains
-	 * newlines separating the rows, so just dump it to stdout.
-	 *
-	 * Steps:
-	 * 1. Move cursor to top-left: terminal_.cursor_home()
-	 * 2. Write the frame data: fwrite() from frame_buffer_ + DATA_OFFSET
-	 * 3. Flush stdout: fflush(stdout)
-	 */
-	void display_frame() override
-	{
-		terminal_.cursor_home();
-
-		fwrite(
-			frame_buffer_.data() + frame::DATA_OFFSET,
-			1,
-			frame::DATA_SIZE,
-			stdout
-		);
-
-		fflush(stdout);
-	}
-
-	/*
-	 * TODO 5: Frame rate delay
-	 *
-	 * Sleep for 1/fps seconds to maintain the target frame rate.
-	 *
-	 * Steps:
-	 * 1. Calculate delay: 1000000000 / frame::DEFAULT_FPS nanoseconds
-	 * 2. Use nanosleep() with a struct timespec
-	 *
-	 * Example:
-	 *   struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
-	 *   nanosleep(&ts, nullptr);
-	 */
-	void frame_delay() override
-	{
-		/* --- YOUR CODE HERE --- */
-		struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
-		nanosleep(&ts, nullptr);
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 6: Print statistics
-	 *
-	 * Print a summary of what happened. Include:
-	 * - stats_.frames_received
-	 * - stats_.frames_dropped
-	 * - stats_.crc_errors
-	 * - stats_.magic_errors
-	 *
-	 * Use fprintf(stderr, ...) so it doesn't interfere with the display.
-	 */
-	void print_stats() override
-	{
-		fprintf(stderr,
-			"Frames received: %lu\n"
-			"Frames dropped: %lu\n"
-			"CRC errors: %lu\n"
-			"Magic errors: %lu\n",
-			stats_.frames_received,
-			stats_.frames_dropped,
-			stats_.crc_errors,
-			stats_.magic_errors);
-
-		if (record_file_ != nullptr)
-		{
-			fclose(record_file_);
-			record_file_ = nullptr;
-		}
-	}
-
-	/*
-	 * TODO 7: Record frames to disk
-	 *
-	 * When the user passes --record FILE, you should save every received
-	 * frame to disk for offline analysis / validation.
-	 *
-	 * The base class already parses --record and stores the filename in
-	 * record_path_ (empty string means recording is disabled).
-	 *
-	 * You need to:
-	 * 1. Add a FILE* member to this class (initialized to nullptr)
-	 * 2. In receive_frame(), AFTER reading the frame into frame_buffer_:
-	 *    a. If record_path_ is empty, skip recording
-	 *    b. If the file isn't open yet, open it:
-	 *       fopen(record_path_.c_str(), "wb")
-	 *    c. Write the raw frame: fwrite(frame_buffer_.data(), 1, frame::SIZE, file)
-	 * 3. In print_stats(), close the file if it was opened
-	 *
-	 * Recording format: raw 5120-byte frames, back to back. No extra
-	 * headers or metadata. This makes offline validation trivial, just
-	 * read 5120-byte chunks and check each one.
-	 *
-	 * Record ALL received frames, even if they later fail validation.
-	 * That's the whole point of a debug recording.
-	 *
-	 * Usage: ./phantomfpga_view localhost 5000 --record stream.bin
-	 */
-
-	/* --- YOUR CODE HERE (modify receive_frame and print_stats above) --- */
-	/* Add a FILE* member and integrate recording into existing methods.   */
-		FILE* record_file_ = nullptr;
-
-
-	/* --- END YOUR CODE --- */
-};
-
-/* ----------------------------------------------------------------------- */
-/* main()                                                                  */
-/* ----------------------------------------------------------------------- */
-
-int main(int argc, char* argv[])
+static constexpr std::array<uint32_t, 256> build_crc32_table()
 {
-	PhantomFpgaViewerImpl viewer;
-	return viewer.run(argc, argv);
+	std::array<uint32_t, 256> table = {};
+	for (uint32_t i = 0; i < 256; i++) {
+		uint32_t crc = i;
+		for (int j = 0; j < 8; j++) {
+			if (crc & 1)
+				crc = (crc >> 1) ^ 0xEDB88320;
+			else
+				crc >>= 1;
+		}
+		table[i] = crc;
+	}
+	return table;
+}
+
+const std::array<uint32_t, 256> CRC32::table_ = build_crc32_table();
+
+uint32_t CRC32::compute(const void* data, size_t len)
+{
+	auto bytes = static_cast<const uint8_t*>(data);
+	uint32_t crc = 0xFFFFFFFF;
+	for (size_t i = 0; i < len; i++)
+		crc = (crc >> 8) ^ table_[(crc ^ bytes[i]) & 0xFF];
+	return crc ^ 0xFFFFFFFF;
+}
+
+/* ======================================================================== */
+/* TcpClient Implementation                                                 */
+/* ======================================================================== */
+
+TcpClient::~TcpClient()
+{
+	if (fd_ >= 0) ::close(fd_);
+}
+
+bool TcpClient::connect(const std::string& host, int port)
+{
+	char port_str[16];
+	snprintf(port_str, sizeof(port_str), "%d", port);
+
+	struct addrinfo hints = {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+
+	struct addrinfo* result = nullptr;
+	int ret = getaddrinfo(host.c_str(), port_str, &hints, &result);
+	if (ret != 0) {
+		fprintf(stderr, "Error: getaddrinfo: %s\n", gai_strerror(ret));
+		return false;
+	}
+
+	/* Try each address until one works */
+	for (auto rp = result; rp != nullptr; rp = rp->ai_next) {
+		fd_ = ::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		if (fd_ < 0)
+			continue;
+
+		if (::connect(fd_, rp->ai_addr, rp->ai_addrlen) == 0)
+			break; /* connected */
+
+		::close(fd_);
+		fd_ = -1;
+	}
+
+	freeaddrinfo(result);
+
+	if (fd_ < 0) {
+		fprintf(stderr, "Error: could not connect to %s:%d\n",
+		        host.c_str(), port);
+		return false;
+	}
+
+	fprintf(stderr, "[*] Connected to %s:%d\n", host.c_str(), port);
+	return true;
+}
+
+bool TcpClient::read_exact(void* buf, size_t len, const volatile bool* running)
+{
+	auto ptr = static_cast<uint8_t*>(buf);
+	size_t remaining = len;
+
+	while (remaining > 0 && *running) {
+		ssize_t n = ::read(fd_, ptr, remaining);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			return false;
+		}
+		if (n == 0)
+			return false; /* EOF */
+		ptr += n;
+		remaining -= static_cast<size_t>(n);
+	}
+
+	return remaining == 0;
+}
+
+/* ======================================================================== */
+/* Terminal Implementation                                                  */
+/* ======================================================================== */
+
+void Terminal::clear_screen()
+{
+	printf("\033[2J\033[H");
+	fflush(stdout);
+}
+
+void Terminal::hide_cursor()
+{
+	printf("\033[?25l");
+	fflush(stdout);
+	cursor_hidden_ = true;
+}
+
+void Terminal::show_cursor()
+{
+	printf("\033[?25h");
+	fflush(stdout);
+	cursor_hidden_ = false;
+}
+
+void Terminal::cursor_home()
+{
+	printf("\033[H");
+}
+
+/* ======================================================================== */
+/* PhantomFpgaViewer Implementation                                         */
+/* ======================================================================== */
+
+PhantomFpgaViewer* PhantomFpgaViewer::instance_ = nullptr;
+
+PhantomFpgaViewer::PhantomFpgaViewer()
+{
+	frame_buffer_.fill(0);
+}
+
+PhantomFpgaViewer::~PhantomFpgaViewer() = default;
+
+void PhantomFpgaViewer::signal_handler(int /* sig */)
+{
+	if (instance_)
+		instance_->running_ = false;
+}
+
+void PhantomFpgaViewer::usage(const char* prog)
+{
+	fprintf(stderr,
+		"Usage: %s [options] [host] [port]\n"
+		"\n"
+		"Connect to a PhantomFPGA server and display frame data.\n"
+		"\n"
+		"  host           Server hostname (default: localhost)\n"
+		"  port           Server port (default: 5000)\n"
+		"  --record FILE  Save raw frames to FILE for validation\n"
+		"  -h             Show this help\n"
+		"\n"
+		"Terminal must be at least %dx%d.\n",
+		prog, frame::COLS, frame::ROWS);
+}
+
+int PhantomFpgaViewer::parse_arguments(int argc, char* argv[],
+                                        std::string& host, int& port)
+{
+	host = "localhost";
+	port = 5000;
+
+	/* First pass: extract flags */
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+			usage(argv[0]);
+			return 1;
+		}
+		if (strcmp(argv[i], "--record") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "Error: --record requires a filename\n");
+				return -1;
+			}
+			record_path_ = argv[++i];
+		}
+	}
+
+	/* Second pass: positional args (skip consumed flags) */
+	int pos = 0;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--record") == 0) {
+			i++; /* skip filename */
+			continue;
+		}
+		if (argv[i][0] == '-')
+			continue;
+
+		if (pos == 0)
+			host = argv[i];
+		else if (pos == 1) {
+			port = atoi(argv[i]);
+			if (port < 1 || port > 65535) {
+				fprintf(stderr, "Error: invalid port %s\n", argv[i]);
+				return -1;
+			}
+		}
+		pos++;
+	}
+
+	return 0;
+}
+
+int PhantomFpgaViewer::run_viewer()
+{
+	terminal_.clear_screen();
+	terminal_.hide_cursor();
+
+	while (running_) {
+		if (!receive_frame())
+			break;
+
+		stats_.frames_received++;
+
+		if (!validate_frame())
+			continue;
+
+		check_sequence();
+		display_frame();
+		frame_delay();
+	}
+
+	terminal_.show_cursor();
+	printf("\n");
+	print_stats();
+
+	return 0;
+}
+
+int PhantomFpgaViewer::run(int argc, char* argv[])
+{
+	std::string host;
+	int port;
+
+	int ret = parse_arguments(argc, argv, host, port);
+	if (ret != 0)
+		return (ret > 0) ? 0 : 1;
+
+	/* Install signal handlers */
+	instance_ = this;
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
+
+	fprintf(stderr,
+		"[*] PhantomFPGA Viewer\n"
+		"[*] Connecting to %s:%d...\n"
+		"[*] Make sure your terminal is at least %dx%d\n",
+		host.c_str(), port, frame::COLS, frame::ROWS);
+
+	if (!record_path_.empty())
+		fprintf(stderr, "[*] Recording to %s\n", record_path_.c_str());
+
+	if (!client_.connect(host, port))
+		return 1;
+
+	int result = run_viewer();
+
+	return result;
 }
