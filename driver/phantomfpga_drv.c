@@ -623,34 +623,23 @@ static __poll_t pfpga_poll(struct file *file, poll_table *wait)
 	struct phantomfpga_dev *pfdev = file->private_data;
 	__poll_t mask = 0;
 	unsigned long flags;
-	u32 head, tail;
+	u32 cons;		/* consumer index */
+	u32 compl_tail; /* completed tail */
 
-	/*
-	 * TODO: Implement poll support for SG-DMA
-	 *
-	 * Steps:
-	 *   1. Register with poll subsystem:
-	 *      poll_wait(file, &pfdev->wait_queue, wait);
-	 *
-	 *   2. Check for completed-but-not-consumed frames:
-	 *      spin_lock_irqsave(&pfdev->lock, flags);
-	 *      cons = pfdev->consumer;
-	 *      compl_tail = pfdev->shadow_tail;
-	 *      spin_unlock_irqrestore(&pfdev->lock, flags);
-	 *
-	 *   3. Set return mask:
-	 *      if (cons != compl_tail)
-	 *          mask |= EPOLLIN | EPOLLRDNORM;
-	 *      if (!pfdev->streaming)
-	 *          mask |= EPOLLHUP;
-	 *
-	 *   4. Return mask
-	 */
-
-	(void)flags;
-	(void)head;
-	(void)tail;
+	/* Register with poll subsystem */
 	poll_wait(file, &pfdev->wait_queue, wait);
+
+	/* Check for completed-but-not-consumed frames */
+	spin_lock_irqsave(&pfdev->lock, flags);
+	cons = pfdev->consumer;
+	compl_tail = pfdev->shadow_tail;
+	spin_unlock_irqrestore(&pfdev->lock, flags);
+
+	/* Set return mask */
+	if (cons != compl_tail)
+		mask |= EPOLLIN | EPOLLRDNORM;
+	if (!pfdev->streaming)
+		mask |= EPOLLHUP;
 
 	return mask;
 }
