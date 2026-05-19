@@ -29,6 +29,9 @@ cd driver
 # 2. Clean previous build outputs
 make clean
 
+# for wsl
+make clean KDIR=$HOME/PhantomFPGA/platform/buildroot/output/aarch64/build/linux-6.6.70 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+
 # 3. Compile the driver for the arm64 architecture using the Buildroot compiler
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR=../../PhantomFPGA/platform/buildroot/output/aarch64/build/linux-6.6.70
 

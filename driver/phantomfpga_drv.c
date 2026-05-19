@@ -321,7 +321,7 @@ static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 	pfpga_init_descriptors(pfdev);
 
 	/* Submit all available descriptors */
-	pfpga_submit_descriptors(pfdev);
+	pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1);
 
 	/* Clear any pending IRQs */
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ALL);
@@ -538,13 +538,12 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	/* Wait for completed descriptors if blocking */
 	if (!(file->f_flags & O_NONBLOCK))
 	{
-		ret = wait_event_interruptible(pfdev->wait_queue,
-									   consumer != shadow_tail || !streaming);
+		ret = wait_event_interruptible(pfdev->wait_queue, pfdev->consumer != pfdev->shadow_tail || !pfdev->streaming);
 		/* consumer != shadow_tail means IRQ handler advanced shadow_tail */
 		if (ret)
 			return ret;
 		/* Check if streaming was disabled while waiting for event */
-		if (!streaming)
+		if (!pfdev->streaming)
 			return 0; /* EOF */
 	}
 
