@@ -530,79 +530,73 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	size_t to_copy;
 	int ret;
 
-	/*
-	 * TODO: Implement frame reading with SG-DMA
-	 *
-	 * Steps:
-	 *   1. Check if device is streaming - return -EINVAL if not
-	 *
-	 *   2. Wait for completed descriptors if blocking:
-	 *      if (!(file->f_flags & O_NONBLOCK)) {
-	 *          ret = wait_event_interruptible(pfdev->wait_queue,
-	 *              consumer != shadow_tail || !streaming);
-	 *          // consumer != shadow_tail means IRQ handler advanced shadow_tail
-	 *          if (ret) return ret;
-	 *          if (!streaming) return 0;  // EOF
-	 *      }
-	 *
-	 *   3. Check for completed-but-not-consumed frames under lock:
-	 *      spin_lock_irqsave(&pfdev->lock, flags);
-	 *      cons = pfdev->consumer;
-	 *      compl_tail = pfdev->shadow_tail;
-	 *      spin_unlock_irqrestore(&pfdev->lock, flags);
-	 *
-	 *   4. If cons == compl_tail (nothing to consume), return -EAGAIN
-	 *
-	 *   5. Get the next completed descriptor:
-	 *      desc = &pfdev->desc_ring[cons];
-	 *      if (!(desc->control & PHANTOMFPGA_DESC_CTRL_COMPLETED))
-	 *          return -EAGAIN;  // Not actually complete yet
-	 *
-	 *   6. Read completion status from buffer end:
-	 *      buffer = pfdev->buffers[cons].vaddr;
-	 *      compl = phantomfpga_completion_ptr(buffer, pfdev->buffer_size);
-	 *      if (compl->status != PHANTOMFPGA_COMPL_OK)
-	 *          dev_warn(...);  // Handle error
-	 *
-	 *   7. Validate frame CRC (optional but recommended):
-	 *      if (!pfpga_validate_frame_crc(buffer)) {
-	 *          pfdev->crc_errors++;
-	 *          // Decide: drop frame or return anyway?
-	 *      }
-	 *
-	 *   8. Copy frame data to userspace:
-	 *      to_copy = min(count, (size_t)le32_to_cpu(compl->actual_length));
-	 *      if (copy_to_user(buf, buffer, to_copy))
-	 *          return -EFAULT;
-	 *
-	 *   9. Reset descriptor for reuse:
-	 *      desc->control = 0;  // Clear COMPLETED
-	 *
-	 *  10. Advance consumer and resubmit:
-	 *      spin_lock_irqsave(&pfdev->lock, flags);
-	 *      pfdev->consumer = (cons + 1) & (pfdev->desc_count - 1);
-	 *      pfdev->frames_consumed++;
-	 *      pfdev->bytes_consumed += to_copy;
-	 *      spin_unlock_irqrestore(&pfdev->lock, flags);
-	 *      // Resubmit one descriptor
-	 *      pfpga_submit_descriptors(pfdev, 1);
-	 *
-	 *  11. Return bytes copied (should be PHANTOMFPGA_FRAME_SIZE on success)
-	 */
+	/* Check if device is streaming */
+	if (!pfdev->streaming)
+		return -EINVAL;
 
-	/* Stub implementation */
-	(void)pfdev;
-	(void)flags;
-	(void)head;
-	(void)tail;
-	(void)pending;
-	(void)desc;
-	(void)compl;
-	(void)buffer;
-	(void)to_copy;
-	(void)ret;
+	/* Wait for completed descriptors if blocking */
+	if (!(file->f_flags & O_NONBLOCK))
+	{
+		ret = wait_event_interruptible(pfdev->wait_queue,
+									   consumer != shadow_tail || !streaming);
+		/* consumer != shadow_tail means IRQ handler advanced shadow_tail */
+		if (ret)
+			return ret;
+		/* Check if streaming was disabled while waiting for event */
+		if (!streaming)
+			return 0; /* EOF */
+	}
 
-	return -ENOTSUPP;
+	/* Check for completed-but-not-consumed frames under lock */
+	spin_lock_irqsave(&pfdev->lock, flags);
+	cons = pfdev->consumer;
+	compl_tail = pfdev->shadow_tail;
+	spin_unlock_irqrestore(&pfdev->lock, flags);
+
+	/* If cons == compl_tail (nothing to consume) */
+	if (cons == compl_tail)
+		return -EAGAIN;
+
+	/* Get the next completed descriptor */
+	desc = &pfdev->desc_ring[cons];
+	if (!(desc->control & PHANTOMFPGA_DESC_CTRL_COMPLETED))
+		return -EAGAIN; /* Not actually complete yet */
+
+	/* Read completion status from buffer end */
+	buffer = pfdev->buffers[cons].vaddr;
+	compl = phantomfpga_completion_ptr(buffer, pfdev->buffer_size);
+	if (compl->status != PHANTOMFPGA_COMPL_OK)
+	{
+		/* Handle error */
+		dev_warn(&pfdev->pdev->dev, "Completion buffer status: 0x%x", compl->status);
+	}
+
+	/* Validate frame CRC */
+	if (!pfpga_validate_frame_crc(buffer))
+	{
+		pfdev->crc_errors++;
+		/* Decide: drop frame or return anyway? */
+	}
+
+	/* Copy frame data to userspace */
+	to_copy = min(count, (size_t)le32_to_cpu(compl->actual_length));
+	if (copy_to_user(buf, buffer, to_copy))
+		return -EFAULT;
+
+	/* Reset descriptor for reuse */
+	desc->control = 0; /* Clear COMPLETED */
+
+	/* Advance consumer and resubmit */
+	spin_lock_irqsave(&pfdev->lock, flags);
+	pfdev->consumer = (cons + 1) & (pfdev->desc_count - 1);
+	pfdev->frames_consumed++;
+	pfdev->bytes_consumed += to_copy;
+	spin_unlock_irqrestore(&pfdev->lock, flags);
+	/* Resubmit one descriptor */
+	pfpga_submit_descriptors(pfdev, 1);
+
+	/* Return bytes copied (should be PHANTOMFPGA_FRAME_SIZE on success) */
+	return to_copy;
 }
 
 /*
