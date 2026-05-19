@@ -3,7 +3,17 @@
 ### Work Environments (Terminals):
 For a convenient workflow, open two terminal windows:
 *   **Terminal 1 (Host):** Your local computer (Ubuntu). Used for compiling the code and transferring files.
+
+    ```bash
+    cd phantomfpga-project
+    ```
+
 *   **Terminal 2 (QEMU):** The virtual machine. Used for running the driver and the application.
+
+    ```bash
+    cd PhantomFPGA
+    ./platform/run_qemu.sh --arch aarch64
+    ```
 
 ---
 

@@ -523,7 +523,8 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 {
 	struct phantomfpga_dev *pfdev = file->private_data;
 	unsigned long flags;
-	u32 head, tail, pending;
+	u32 cons;		/* consumer index */
+	u32 compl_tail; /* completed tail */
 	struct phantomfpga_sg_desc *desc;
 	struct phantomfpga_completion *compl;
 	void *buffer;
