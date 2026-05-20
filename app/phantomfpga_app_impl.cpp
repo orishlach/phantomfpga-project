@@ -36,48 +36,50 @@
 /* The base class handles everything else (CLI, TCP, signals, cleanup).    */
 /* ----------------------------------------------------------------------- */
 
-class PhantomFpgaAppImpl : public PhantomFpgaApp {
+class PhantomFpgaAppImpl : public PhantomFpgaApp
+{
 protected:
-
 	/*
-	 * TODO: Open the PhantomFPGA device node
-	 *
-	 * Steps:
-	 * 1. Call open() with O_RDWR on DEVICE_PATH
-	 * 2. Store the result in dev_fd_ using FileDescriptor
-	 *
-	 * Example:
-	 *   int fd = ::open(DEVICE_PATH, O_RDWR);
-	 *   if (fd < 0) return -errno;
-	 *   dev_fd_ = FileDescriptor(fd);
-	 *   return 0;
+	 * Open the PhantomFPGA device node
 	 */
 	int open_device() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement open_device()\n");
-		return -ENODEV;
-		/* --- END YOUR CODE --- */
+		/* Call open() with O_RDWR on DEVICE_PATH */
+		int fd = ::open(DEVICE_PATH, O_RDWR);
+		if (fd < 0)
+		{
+			return -errno;
+		}
+
+		/* Store the result in dev_fd_ using FileDescriptor */
+		dev_fd_ = FileDescriptor(fd);
+
+		return 0;
 	}
 
 	/*
-	 * TODO: Configure the device
-	 *
-	 * Steps:
-	 * 1. Create a struct phantomfpga_config (zero-initialize it!)
-	 * 2. Fill in desc_count and frame_rate from config_
-	 * 3. Set irq_coalesce_count and irq_coalesce_timeout (use the
-	 *    DEFAULT_IRQ_COUNT and DEFAULT_IRQ_TIMEOUT constants)
-	 * 4. Call ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_SET_CFG, &cfg)
-	 *
+	 * Configure the device
 	 * Hint: Zero-init with = {} or memset to clear the reserved fields.
 	 */
 	int configure_device() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement configure_device()\n");
-		return -1;
-		/* --- END YOUR CODE --- */
+		/* Create a struct phantomfpga_config (zero-initialize it!) */
+		struct phantomfpga_config cfg = {};
+
+		/* Fill in desc_count and frame_rate from config_ */
+		cfg.desc_count = this->config_.desc_count;
+		cfg.frame_rate = this->config_.frame_rate;
+
+		/* Set irq_coalesce_count and irq_coalesce_timeout */
+		cfg.irq_coalesce_count = DEFAULT_IRQ_COUNT;
+		cfg.irq_coalesce_timeout = DEFAULT_IRQ_TIMEOUT;
+
+		/* Call ioctl */
+		int ret = ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_SET_CFG, &cfg);
+		if (ret < 0)
+			return -errno;
+
+		return 0;
 	}
 
 	/*
@@ -104,31 +106,27 @@ protected:
 	}
 
 	/*
-	 * TODO: Start frame streaming
-	 *
-	 * Just one ioctl call:
-	 *   ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_START)
+	 * Start frame streaming
 	 */
 	int start_streaming() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement start_streaming()\n");
-		return -1;
-		/* --- END YOUR CODE --- */
+		/* Just one ioctl call */
+		int ret = ::ioctl(this->dev_fd_.get(), PHANTOMFPGA_IOCTL_START);
+		if (ret < 0)
+			return -errno;
+		return 0;
 	}
 
 	/*
-	 * TODO: Stop frame streaming
-	 *
-	 * Just one ioctl call:
-	 *   ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_STOP)
+	 * Stop frame streaming
 	 */
 	int stop_streaming() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement stop_streaming()\n");
-		return -1;
-		/* --- END YOUR CODE --- */
+		/* Just one ioctl call */
+		int ret = ::ioctl(this->dev_fd_.get(), PHANTOMFPGA_IOCTL_STOP);
+		if (ret < 0)
+			return -errno;
+		return 0;
 	}
 
 	/*
@@ -153,7 +151,8 @@ protected:
 	{
 		/* --- YOUR CODE HERE --- */
 		fprintf(stderr, "TODO: Implement main_loop()\n");
-		while (running_) {
+		while (running_)
+		{
 			if (tcp_server_)
 				tcp_server_->try_accept();
 			sleep(1);
@@ -162,25 +161,40 @@ protected:
 	}
 
 	/*
-	 * TODO: Process a single frame
-	 *
-	 * Steps:
-	 * 1. Call validate_frame(buffer, len) to check the frame
-	 * 2. Increment stats_.frames_received
-	 * 3. If valid: increment stats_.frames_valid
-	 * 4. If tcp_server_ has a client: call tcp_server_->send_frame(buffer, len)
-	 * 5. If config_.verbose: print frame info (sequence, size, valid/invalid)
-	 *
-	 * Returns 0 on success.
+	 * Process a single frame
 	 */
-	int process_frame(const void* buffer, uint32_t len) override
+	int process_frame(const void *buffer, uint32_t len) override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement process_frame()\n");
-		(void)buffer;
-		(void)len;
-		return -1;
-		/* --- END YOUR CODE --- */
+		/* Check the frame */
+		bool valid = validate_frame(buffer, len);
+
+		/* Increment stats_.frames_received */
+		stats_.frames_received++;
+
+		/* If valid */
+		if (valid)
+		{
+			stats_.frames_valid++;
+		}
+
+		/* If tcp_server_ has a client */
+		if (tcp_server_)
+		{
+			tcp_server_->send_frame(buffer, len);
+		}
+
+		/* If config_.verbose: print frame info */
+		if (config_.verbose)
+		{
+			std::fprintf(stderr,
+						 "Frame: seq=%u size=%u status=%s\n",
+						 stats_.last_seq,
+						 len,
+						 valid ? "valid" : "invalid");
+		}
+
+		/* Returns 0 on success */
+		return 0;
 	}
 
 	/*
@@ -204,7 +218,7 @@ protected:
 	 * Update stats_.last_seq and stats_.seq_initialized.
 	 * Returns true if the frame is valid.
 	 */
-	bool validate_frame(const void* frame, uint32_t frame_size) override
+	bool validate_frame(const void *frame, uint32_t frame_size) override
 	{
 		/* --- YOUR CODE HERE --- */
 		fprintf(stderr, "TODO: Implement validate_frame()\n");
@@ -215,22 +229,53 @@ protected:
 	}
 
 	/*
-	 * TODO: Print statistics
-	 *
-	 * Steps:
-	 * 1. Print app-side stats from stats_ (frames_received, frames_valid,
-	 *    seq_errors, magic_errors, crc_errors)
-	 * 2. If tcp_server_: print network stats (frames_sent, bytes_sent)
-	 * 3. Get device stats: create a struct phantomfpga_stats, call
-	 *    ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_STATS, &dev_stats)
-	 *    Print frames_produced, frames_dropped, current_frame
-	 * 4. Calculate and print runtime duration from stats_.start_time
+	 * Print statistics
 	 */
 	void print_statistics() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement print_statistics()\n");
-		/* --- END YOUR CODE --- */
+		/* Print app-side stats */
+		fprintf(stderr, "\n=== Application Statistics ===\n");
+		fprintf(stderr, "Frames received: %lu\n", stats_.frames_received);
+		fprintf(stderr, "Frames valid: %lu\n", stats_.frames_valid);
+		fprintf(stderr, "Sequence errors: %lu\n", stats_.seq_errors);
+		fprintf(stderr, "Magic errors: %lu\n", stats_.magic_errors);
+		fprintf(stderr, "CRC errors: %lu\n", stats_.crc_errors);
+
+		/* If tcp_server_: print network stats */
+		if (tcp_server_)
+		{
+			fprintf(stderr, "\n=== Network Statistics ===\n");
+			fprintf(stderr, "Frames sent: %lu\n", tcp_server_->stats().frames_sent);
+			fprintf(stderr, "Bytes sent: %lu\n", tcp_server_->stats().bytes_sent);
+		}
+
+		/* Get device stats */
+		if (dev_fd_.valid())
+		{
+			struct phantomfpga_stats dev_stats = {};
+			int ret = ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_STATS, &dev_stats);
+			if (!ret)
+			{
+				fprintf(stderr, "\n=== Device Statistics ===\n");
+				fprintf(stderr, "Frames produced: %llu\n", dev_stats.frames_produced);
+				fprintf(stderr, "Frames dropped: %llu\n", dev_stats.frames_dropped);
+				fprintf(stderr, "Current frame: %u\n", dev_stats.current_frame);
+			}
+		}
+
+		/* Calculate and print runtime duration */
+		fprintf(stderr, "\n=== Runtime ===\n");
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		uint64_t elapsed_sec = now.tv_sec - stats_.start_time.tv_sec;
+		int64_t elapsed_nsec = now.tv_nsec - stats_.start_time.tv_nsec;
+		if (elapsed_nsec < 0)
+		{
+			elapsed_sec--;
+			elapsed_nsec += 1000000000;
+		}
+		fprintf(stderr, "Runtime: %lu.%03lu seconds\n", elapsed_sec, elapsed_nsec / 1000000);
 	}
 };
 
@@ -238,7 +283,7 @@ protected:
 /* main()                                                                  */
 /* ----------------------------------------------------------------------- */
 
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
 	PhantomFpgaAppImpl app;
 	return app.run(argc, argv);
