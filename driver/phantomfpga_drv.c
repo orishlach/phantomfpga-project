@@ -778,11 +778,7 @@ static __poll_t pfpga_poll(struct file *file, poll_table *wait)
  */
 static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct phantomfpga_dev *pfdev = file->private_data;
-	size_t size = vma->vm_end - vma->vm_start;
-	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-
-	/*
+		/*
 	 * TODO: Implement mmap support for SG-DMA buffers
 	 *
 	 * The mmap layout allows mapping individual descriptor buffers
@@ -811,12 +807,82 @@ static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 	 * large coherent region. Mapping is straightforward in that case.
 	 */
 
-	(void)size;
-	(void)offset;
+
+	// The current userspace virtual address where we map the next buffer.
+	unsigned long user_addr;
+	// How many bytes are still left to map.
+	size_t remaining;
+	// How many bytes to map from the current buffer.
+	size_t map_size;
+	// Descriptor/buffer index.
+	u32 i;
+	// Return value from the mapping function.
+	int ret;
+	//  Page Frame Number.
+	unsigned long pfn;
+	// The virtual distance between two mapped buffers in userspace.
+	size_t stride;
+
+	// Get the PhantomFPGA device object that was saved in file->private_data during open().
+	struct phantomfpga_dev *pfdev = file->private_data;
+
+	// Calculate how many bytes userspace wants to map.
+	size_t size = vma->vm_end - vma->vm_start;
+
+	// Convert the mmap offset from page units into byte units.
+	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
+
 	dev_dbg(&pfdev->pdev->dev, "mmap request: size=%zu offset=%lu\n",
 		size, offset);
+	
+	// Do not allow mmap before the driver has valid DMA buffers.
+	if (!pfdev->configured)
+		return -EINVAL;
 
-	return -ENOTSUPP;
+	// This simple mmap implementation only supports mapping from buffer[0].
+	if (offset != 0)
+		return -EINVAL;
+
+	stride = PAGE_ALIGN(pfdev->buffer_size);
+
+	// Do not allow userspace to map more bytes than the total DMA buffer pool.
+	if (size > pfdev->desc_count * stride)
+		return -EINVAL;
+
+	// The userspace virtual pages should be mapped as non-cached,
+    // because otherwise userspace may read stale / old data from CPU cache.
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+	// Mark this VMA as device/I/O memory and prevent expansion/core-dump inclusion.
+	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
+
+	// Start mapping at the first userspace virtual address of this mmap area.
+	user_addr = vma->vm_start;
+	// At the beginning, the full requested mmap size still needs to be mapped.
+ 	remaining = size;
+
+	for (i = 0; i < pfdev->desc_count && remaining > 0; i++) 
+	{
+		//  Map one buffer slot,
+		//  but if userspace requested less than a full slot,
+		//  only map the remaining amount.
+		map_size = min(remaining, stride);
+
+		pfn = pfdev->buffers[i].dma_addr >> PAGE_SHIFT;
+
+		ret = remap_pfn_range(vma,
+				      user_addr,
+				      pfn,
+				      map_size,
+				      vma->vm_page_prot);
+		if (ret)
+			return ret;
+
+		user_addr += map_size;
+		remaining -= map_size;
+	}
+
+	return 0;
 }
 
 /*
