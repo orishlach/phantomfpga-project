@@ -723,28 +723,69 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	{
 		struct phantomfpga_config cfg;
 
-		/*
-		 * TODO: Handle SET_CFG for frame streaming
-		 *
-		 * Steps:
-		 *   1. Check !pfdev->streaming (return -EBUSY if streaming)
-		 *   2. copy_from_user(&cfg, argp, sizeof(cfg))
-		 *   3. Validate parameters:
-		 *      - desc_count in [MIN_DESC_COUNT, MAX_DESC_COUNT]
-		 *      - desc_count is power of 2
-		 *      - frame_rate in [MIN_FRAME_RATE, MAX_FRAME_RATE]
-		 *   4. Calculate buffer size:
-		 *      buffer_size = PHANTOMFPGA_FRAME_SIZE + PHANTOMFPGA_COMPL_SIZE
-		 *   5. Allocate/reallocate descriptor ring and buffers if needed
-		 *   6. Store configuration in pfdev
-		 *   7. Call pfpga_apply_config()
-		 *   8. Call pfpga_configure_desc_ring()
-		 *   9. Call pfpga_init_descriptors()
-		 *  10. Set pfdev->configured = true
-		 *  11. Return 0
+		/* Handle SET_CFG for frame streaming */
+
+		/* Check !pfdev->streaming (return -EBUSY if streaming) */
+		if (pfdev->streaming)
+		{
+			ret = -EBUSY;
+			break;
+		}
+
+		/* copy_from_user(&cfg, argp, sizeof(cfg)) */
+		if (copy_from_user(&cfg, argp, sizeof(cfg)))
+		{
+			ret = -EINVAL;
+			break;
+		}
+
+		/* Validate parameters
+		 * desc_count in [MIN_DESC_COUNT, MAX_DESC_COUNT]
+		 * desc_count is power of 2
 		 */
-		(void)cfg;
-		ret = -ENOTSUPP;
+
+		if (cfg.desc_count > PHANTOMFPGA_MAX_DESC_COUNT ||
+			cfg.desc_count < PHANTOMFPGA_MIN_DESC_COUNT ||
+			!is_power_of_2(cfg.desc_count))
+		{
+			ret = -EINVAL;
+			break;
+		}
+
+		/* Validate parameters: frame_rate in [MIN_FRAME_RATE, MAX_FRAME_RATE] */
+		if (cfg.frame_rate > PHANTOMFPGA_MAX_FRAME_RATE || cfg.frame_rate < PHANTOMFPGA_MIN_FRAME_RATE)
+		{
+			ret = -EINVAL;
+			break;
+		}
+
+		/* Calculate buffer size: buffer_size = PHANTOMFPGA_FRAME_SIZE + PHANTOMFPGA_COMPL_SIZE*/
+		if (cfg.desc_count != pfdev->desc_count)
+		{
+			/* Allocate/reallocate descriptor ring and buffers if needed */
+			pfpga_free_descriptors(pfdev);
+			pfpga_alloc_descriptors(pfdev, cfg.desc_count, pfdev->buffer_size);
+			pfdev->desc_count = cfg.desc_count;
+		}
+
+		/* Store configuration in pfdev */
+		pfdev->irq_coalesce_count = cfg.irq_coalesce_count;
+		pfdev->irq_coalesce_timeout = cfg.irq_coalesce_timeout;
+		pfdev->frame_rate = cfg.frame_rate;
+
+		/* Call pfpga_apply_config() */
+		pfpga_apply_config(pfdev);
+
+		/* Call pfpga_configure_desc_ring() */
+		pfpga_configure_desc_ring(pfdev);
+
+		/* Call pfpga_init_descriptors() */
+		pfpga_init_descriptors(pfdev);
+
+		/* Set pfdev->configured = true */
+		pfdev->configured = true;
+
+		/* Return 0 */
 	}
 	break;
 
@@ -868,8 +909,6 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		 *   7. Resubmit one descriptor
 		 *   8. Return 0
 		 */
-		(void)flags;
-		ret = -ENOTSUPP;
 	}
 	break;
 
