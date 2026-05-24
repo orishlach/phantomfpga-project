@@ -909,6 +909,36 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		 *   7. Resubmit one descriptor
 		 *   8. Return 0
 		 */
+
+		/* spin_lock_irqsave */
+		spin_lock_irqsave(&pfdev->lock, flags);
+
+		/* Check if there are completed descriptors */
+		u32 head = pfdev->consumer;
+		u32 tail = pfdev->shadow_tail;
+
+		if (head == tail)
+		{
+			return -1;
+		}
+
+		/* Reset descriptor for reuse */
+		pfdev->desc_ring[head].control = 0;
+
+		/* Advance consumer */
+		pfdev->consumer = (head + 1) & (pfdev->desc_count - 1);
+
+		/* Increment frames_consumed */
+		pfdev->frames_consumed++;
+		pfdev->bytes_consumed += bytes_consumed;
+
+		/* spin_unlock_irqrestore */
+		spin_unlock_irqrestore(&pfdev->lock, flags);
+
+		/* Resubmit one descriptor */
+		pfpga_submit_descriptors(pfdev, 1);
+
+		/* Return 0 */
 	}
 	break;
 
