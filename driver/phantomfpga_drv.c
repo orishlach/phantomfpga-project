@@ -217,34 +217,35 @@ static inline bool pfpga_validate_frame_crc(const void *frame)
 static void __maybe_unused pfpga_configure_desc_ring(struct phantomfpga_dev *pfdev)
 {
 	/*
-	 * TODO: Write descriptor ring configuration to device
-	 *
-	 * Steps:
-	 *   1. Split pfdev->desc_ring_dma into low and high 32-bit parts
-	 *   2. Write low 32 bits to PHANTOMFPGA_REG_DESC_RING_LO
-	 *   3. Write high 32 bits to PHANTOMFPGA_REG_DESC_RING_HI
-	 *   4. Write descriptor count to PHANTOMFPGA_REG_DESC_RING_SIZE
-	 *   5. Initialize head/tail to 0
-	 *
+	 * Write descriptor ring configuration to device
 	 * Hint: Use lower_32_bits() and upper_32_bits() macros
 	 */
+
 	u32 ring_lo;
 	u32 ring_hi;
 
+	/* Split pfdev->desc_ring_dma into low and high 32-bit parts */
 	// Split the descriptor ring DMA address into low/high 32-bit parts.
 	// The FPGA register interface stores the 64-bit address in two registers.
 	ring_lo = lower_32_bits(pfdev->desc_ring_dma);
 	ring_hi = upper_32_bits(pfdev->desc_ring_dma);
+
+	/* Write low 32 bits to PHANTOMFPGA_REG_DESC_RING_LO */
 	// Write the LOW 32 bits of the descriptor ring DMA address
 	// into the FPGA DESC_RING_LO register.
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_LO, ring_lo); //  write to register in little-endian
+
+	/* Write high 32 bits to PHANTOMFPGA_REG_DESC_RING_HI */
 	// Write the HIGH 32 bits of the descriptor ring DMA address
 	// into the FPGA DESC_RING_HI register.
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_HI, ring_hi);
+
+	/* Write descriptor count to PHANTOMFPGA_REG_DESC_RING_SIZE */
 	// Write the number of descriptors into the FPGA DESC_RING_SIZE register.
 	// (write to register in little-endian)
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_RING_SIZE, pfdev->desc_count);
 
+	/* Initialize head/tail to 0 */
 	// Reset driver-side ring indexes.
 	pfdev->desc_head = 0;
 	pfdev->desc_tail = 0;
@@ -290,27 +291,23 @@ static void __maybe_unused pfpga_apply_config(struct phantomfpga_dev *pfdev)
 static void __maybe_unused pfpga_submit_descriptors(struct phantomfpga_dev *pfdev, u32 count)
 {
 	/*
-	 * TODO: (DONE Y) Submit descriptors to device
-	 *
-	 * Steps:
-	 *   1. Memory barrier to ensure descriptor writes are visible:
-	 *      wmb();
-	 *   2. Update driver's head index:
-	 *      pfdev->desc_head = (pfdev->desc_head + count) & (desc_count - 1);
-	 *   3. Write new head to device:
-	 *      pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, pfdev->desc_head);
-	 *
+	 * Submit descriptors to device
 	 * The device will start processing descriptors from tail to head.
 	 */
 
+	/* Memory barrier to ensure descriptor writes are visible */
 	// DRIVER writes some cells in descriptor ring array
 	// wmb() defends compiler and CPU reordering
 	// ensures all write operations before it are completed
 	// before write operations after it are allowed to continue.
 	// DRIVER writes DESC_HEAD register (in FPGA)
 	wmb(); // write memory barrier.
+
+	/* Update driver's head index */
 	// Update the driver's local HEAD index.
 	pfdev->desc_head = (pfdev->desc_head + count) & (pfdev->desc_count - 1);
+
+	/* Write new head to device */
 	// Write the new HEAD value into the FPGA register.
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, pfdev->desc_head);
 }
@@ -325,34 +322,37 @@ static void __maybe_unused pfpga_submit_descriptors(struct phantomfpga_dev *pfde
 static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 {
 
-	/*
-	 * TODO: (DONE! Y) Initialize descriptor ring
-	 *
-	 * For each descriptor i in [0, desc_count):
-	 *   1. Clear control flags: desc_ring[i].control = 0
-	 *   2. Set buffer length: desc_ring[i].length = buffer_size
-	 *   3. Set destination address: desc_ring[i].dst_addr = buffers[i].dma_addr
-	 *   4. Set next descriptor (for chaining, or 0 for ring mode):
-	 *      desc_ring[i].next_desc = 0;  // We use ring mode, not chaining
-	 *   5. Clear reserved: desc_ring[i].reserved = 0
-	 *
-	 * After init, submit all descriptors to make them available:
-	 *   pfpga_submit_descriptors(pfdev, desc_count - 1);
-	 *   (Leave one slot empty to distinguish full from empty)
-	 */
+	/* Initialize descriptor ring */
+
 	u32 i;
+
+	/* For each descriptor i in [0, desc_count) */
 	// iterate every descriptor cell in descriptor ring array:
 	for (i = 0; i < pfdev->desc_count; i++)
 	{
+		/* Clear control flags */
 		// Before giving the descriptor to the FPGA we want all flags cleared.
 		pfdev->desc_ring[i].control = 0; // because the FPGA did not complete this descriptor yet.
+
+		/* Set buffer length */
 		// This field tells the FPGA: How many bytes are available in this DMA buffer
-		pfdev->desc_ring[i].length = cpu_to_le32(pfdev->buffer_size);			//  5136 bytes
-		pfdev->desc_ring[i].dst_addr = cpu_to_le64(pfdev->buffers[i].dma_addr); // physical address!
-		pfdev->desc_ring[i].next_desc = 0;										// descriptors are stored in a continuous array
-		pfdev->desc_ring[i].reserved = 0;										// means: clean unused field, do not leave garbage.
+		pfdev->desc_ring[i].length = cpu_to_le32(pfdev->buffer_size); /* 5136 bytes */
+
+		/* Set destination address */
+		pfdev->desc_ring[i].dst_addr = cpu_to_le64(pfdev->buffers[i].dma_addr); /* physical address */
+
+		/* Set next descriptor (for chaining, or 0 for ring mode) */
+		pfdev->desc_ring[i].next_desc = 0; /* descriptors are stored in a continuous array */ /* We use ring mode, not chaining */
+
+		/* Clear reserved: desc_ring[i].reserved = 0 */
+		pfdev->desc_ring[i].reserved = 0; /* means: clean unused field, do not leave garbage */
 	}
-	pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1); // updates FPGA head register
+
+	/*
+	 * After init, submit all descriptors to make them available
+	 * (Leave one slot empty to distinguish full from empty)
+	 */
+	pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1); /* updates FPGA head register */
 }
 
 /*
@@ -429,6 +429,7 @@ static void pfpga_soft_reset(struct phantomfpga_dev *pfdev)
 {
 	/*
 	 * Trigger soft reset
+	 *
 	 * Note: Reset clears all device state including statistics
 	 */
 
@@ -464,51 +465,42 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 	struct phantomfpga_dev *pfdev = data;
 	u32 irq_status;
 
-	/*
-	 * TODO: (DONE!! Y) Handle completion interrupt
-	 *
-	 * Steps:
-	 *   1. Read IRQ_STATUS register
-	 *   2. Check if PHANTOMFPGA_IRQ_COMPLETE bit is set
-	 *   3. Clear the interrupt by writing back (write-1-to-clear)
-	 *   4. Read new DESC_TAIL from device (completed descriptors)
-	 *   5. Update pfdev->shadow_tail under spinlock
-	 *   6. Increment pfdev->irq_count
-	 *   7. Wake up poll waiters
-	 *   8. Return IRQ_HANDLED
-	 *
-	 * Pattern:
-	 *   spin_lock(&pfdev->lock);
-	 *   pfdev->shadow_tail = pfpga_read32(pfdev, PHANTOMFPGA_REG_DESC_TAIL);
-	 *   pfdev->irq_count++;
-	 *   spin_unlock(&pfdev->lock);
-	 *   wake_up_interruptible(&pfdev->wait_queue);
-	 */
+	/* Handle completion interrupt */
 
+	/* Read IRQ_STATUS register */
 	// Read the interrupt status register from the FPGA.
 	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
 
-	// Check if the COMPLETE bit is really set.
-	// If not, this interrupt is not for this handler.
+	/*
+	 * Check if PHANTOMFPGA_IRQ_COMPLETE bit is set
+	 * If not, this interrupt is not for this handler
+	 */
 	if (!(irq_status & PHANTOMFPGA_IRQ_COMPLETE))
 	{
 		return IRQ_NONE;
 	}
 
+	/* Clear the interrupt by writing back (write-1-to-clear) */
 	// PHANTOMFPGA_REG_IRQ_STATUS is a W1C status register
 	// In a W1C register we use: W1C = Write 1 To Clear
 	// write 1 to  COMPLETE bit to clear it!!.
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_COMPLETE);
 
 	spin_lock(&pfdev->lock);
+	/* Read new DESC_TAIL from device (completed descriptors) */
+	/* Update pfdev->shadow_tail under spinlock */
 	// Read the FPGA DESC_TAIL register.
 	// FPGA can fill FRAMES from index TAIL to HEAD -1 inclusive
 	// Driver can take frames (5136) from CONSUMER to TAIL -1 inclusive
 	// THEN - Driver can produce new descriptors from HEAD to CONSUMER -1 inclusive
 	pfdev->shadow_tail = pfpga_read32(pfdev, PHANTOMFPGA_REG_DESC_TAIL);
+
+	/* Increment pfdev->irq_count */
 	pfdev->irq_count++;
+
 	spin_unlock(&pfdev->lock);
 
+	/* Wake up poll waiters */
 	//  Wake up processes that are sleeping on ( userspace processes waiting in)
 	//  read() poll() epoll()
 	//   we wake them here Because the interrupt handler just updated:
@@ -517,6 +509,8 @@ static irqreturn_t __maybe_unused pfpga_irq_complete(int irq, void *data)
 	//  So now there may be completed frames ready for userspace.
 	wake_up_interruptible(&pfdev->wait_queue);
 	(void)irq;
+
+	/* Return IRQ_HANDLED */
 	return IRQ_HANDLED;
 }
 
@@ -529,23 +523,16 @@ static irqreturn_t __maybe_unused pfpga_irq_error(int irq, void *data)
 {
 	struct phantomfpga_dev *pfdev = data;
 
-	/*
-	 * TODO: Handle error interrupt
-	 *
-	 * Steps:
-	 *   1. Read and clear IRQ_STATUS
-	 *   2. Check PHANTOMFPGA_IRQ_ERROR bit
-	 *   3. Log warning:
-	 *      dev_warn(&pfdev->pdev->dev, "error interrupt: status=0x%x\n", status);
-	 *   4. Wake up waiters so they can handle the condition
-	 *   5. Return IRQ_HANDLED
-	 */
+	/* Handle error interrupt */
+
 	// store the value read from the FPGA IRQ_STATUS register
 	u32 irq_status;
 
+	/* Read and clear IRQ_STATUS */
 	// Read the FPGA interrupt status register.
 	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
 
+	/* Check PHANTOMFPGA_IRQ_ERROR bit */
 	// Check if the ERROR bit is really set.
 	// If the ERROR bit is not set,
 	// this interrupt does not belong to this handler.
@@ -559,14 +546,19 @@ static irqreturn_t __maybe_unused pfpga_irq_error(int irq, void *data)
 	// "I saw the ERROR interrupt.
 	// Clear the ERROR pending bit now."
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ERROR);
+
+	/* Log warning */
 	// Print a warning to the kernel log.
 	dev_warn(&pfdev->pdev->dev, "error interrupt: status=0x%x\n", irq_status);
 
+	/* Wake up waiters so they can handle the condition */
 	// Wake up userspace waiters.
 	// If read(), poll(), or epoll() is sleeping,
 	// wake it up so it can notice that an error happened.
 	wake_up_interruptible(&pfdev->wait_queue);
 	(void)irq;
+
+	/* Return IRQ_HANDLED */
 	return IRQ_HANDLED;
 }
 
@@ -580,14 +572,7 @@ static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 {
 
 	/*
-	 * TODO: (DONE!! Y) Handle no-descriptor interrupt
-	 *
-	 * Steps:
-	 *   1. Read and clear IRQ_STATUS (PHANTOMFPGA_IRQ_NO_DESC bit)
-	 *   2. Log debug (this is expected under load):
-	 *      dev_dbg(&pfdev->pdev->dev, "no descriptors available\n");
-	 *   3. Wake up waiters to potentially free descriptors
-	 *   4. Return IRQ_HANDLED
+	 * Handle no-descriptor interrupt
 	 *
 	 * Note: If you see this often, either increase descriptor count
 	 * or reduce frame rate. Check STAT_FRAMES_DROP for total drops.
@@ -596,6 +581,8 @@ static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 	u32 irq_status;
 
 	struct phantomfpga_dev *pfdev = data;
+
+	/* Read and clear IRQ_STATUS (PHANTOMFPGA_IRQ_NO_DESC bit) */
 	// Read the FPGA interrupt status register.
 	irq_status = pfpga_read32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS);
 
@@ -611,12 +598,16 @@ static irqreturn_t __maybe_unused pfpga_irq_no_desc(int irq, void *data)
 	// Write 1 to the NO_DESC bit to clear it.
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_NO_DESC);
 
+	/* Log debug (this is expected under load) */
 	// Print a debug message to the kernel log.
 	dev_dbg(&pfdev->pdev->dev, "no descriptors available\n");
+
+	/* Wake up waiters to potentially free descriptors */
 	// Wake up userspace waiters.
 	wake_up_interruptible(&pfdev->wait_queue);
 
 	(void)irq;
+	/* Return IRQ_HANDLED */
 	return IRQ_HANDLED;
 }
 
@@ -740,6 +731,7 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	pfdev->frames_consumed++;
 	pfdev->bytes_consumed += to_copy;
 	spin_unlock_irqrestore(&pfdev->lock, flags);
+
 	/* Resubmit one descriptor */
 	pfpga_submit_descriptors(pfdev, 1);
 
@@ -795,48 +787,24 @@ static __poll_t pfpga_poll(struct file *file, poll_table *wait)
 static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	/*
-	 * TODO: Implement mmap support for SG-DMA buffers
+	 * Implement mmap support for SG-DMA buffers
 	 *
 	 * The mmap layout allows mapping individual descriptor buffers
 	 * or the entire buffer pool. Offset determines which buffer(s).
 	 *
 	 * Simple approach: Map all buffers as one contiguous region
 	 *
-	 * Steps:
-	 *   1. Validate request:
-	 *      - Check pfdev->configured is true
-	 *      - Check offset == 0 (we only support mapping from start)
-	 *      - Check size <= desc_count * buffer_size
-	 *
-	 *   2. Set page protection:
-	 *      vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	 *
-	 *   3. Map each buffer page:
-	 *      For each buffer, use remap_pfn_range() or dma_mmap_coherent()
-	 *
-	 *   4. Set VM flags:
-	 *      vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
-	 *
-	 *   5. Return 0 on success
-	 *
 	 * Note: For simplicity, the skeleton allocates buffers as one
 	 * large coherent region. Mapping is straightforward in that case.
 	 */
 
-	// The current userspace virtual address where we map the next buffer.
-	unsigned long user_addr;
-	// How many bytes are still left to map.
-	size_t remaining;
-	// How many bytes to map from the current buffer.
-	size_t map_size;
-	// Descriptor/buffer index.
-	u32 i;
-	// Return value from the mapping function.
-	int ret;
-	//  Page Frame Number.
-	unsigned long pfn;
-	// The virtual distance between two mapped buffers in userspace.
-	size_t stride;
+	unsigned long user_addr; /* The current userspace virtual address where we map the next buffer */
+	size_t remaining;		 /* How many bytes are still left to map */
+	size_t map_size;		 /* How many bytes to map from the current buffer */
+	u32 i;					 /* Descriptor/buffer index */
+	int ret;				 /* Return value from the mapping function */
+	unsigned long pfn;		 /* Page Frame Number */
+	size_t stride;			 /* The virtual distance between two mapped buffers in userspace */
 
 	// Get the PhantomFPGA device object that was saved in file->private_data during open().
 	struct phantomfpga_dev *pfdev = file->private_data;
@@ -847,27 +815,33 @@ static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 	// Convert the mmap offset from page units into byte units.
 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
 
-	dev_dbg(&pfdev->pdev->dev, "mmap request: size=%zu offset=%lu\n",
-			size, offset);
+	dev_dbg(&pfdev->pdev->dev, "mmap request: size=%zu offset=%lu\n", size, offset);
 
+	/* Validate request */
+
+	/* Check pfdev->configured is true */
 	// Do not allow mmap before the driver has valid DMA buffers.
 	if (!pfdev->configured)
 		return -EINVAL;
 
+	/* Check offset == 0 (we only support mapping from start) */
 	// This simple mmap implementation only supports mapping from buffer[0].
 	if (offset != 0)
 		return -EINVAL;
 
 	stride = PAGE_ALIGN(pfdev->buffer_size);
 
+	/* Check size <= desc_count * buffer_size */
 	// Do not allow userspace to map more bytes than the total DMA buffer pool.
 	if (size > pfdev->desc_count * stride)
 		return -EINVAL;
 
+	/* Set page protection */
 	// The userspace virtual pages should be mapped as non-cached,
 	// because otherwise userspace may read stale / old data from CPU cache.
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
+	/* Set VM flags */
 	// Mark this VMA as device/I/O memory and prevent expansion/core-dump inclusion.
 	vm_flags_set(vma, VM_IO | VM_DONTEXPAND | VM_DONTDUMP);
 
@@ -878,6 +852,7 @@ static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 
 	for (i = 0; i < pfdev->desc_count && remaining > 0; i++)
 	{
+		/* Map each buffer page */
 		//  Map one buffer slot,
 		//  but if userspace requested less than a full slot,
 		//  only map the remaining amount.
@@ -897,6 +872,7 @@ static int pfpga_mmap(struct file *file, struct vm_area_struct *vma)
 		remaining -= map_size;
 	}
 
+	/* Return 0 on success */
 	return 0;
 }
 
