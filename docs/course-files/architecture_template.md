@@ -1,12 +1,9 @@
-# Team Architecture Design Template
+# Team Architecture Design
 
-**Team Name:** [Team A / Team B / etc.]
-**Members:** [List names]
-**Date:** March 26, 2026
 **Assigned Roles:**
-- Driver Lead: [Name]
-- App/Protocol Lead: [Name]
-- Viewer Lead: [Name]
+- Driver Lead: [Or](https://github.com/orishlach) and [Yechezkel](https://github.com/waiseye)
+- App/Protocol Lead: [Shay](https://github.com/Shaysaraf12)
+- Viewer Lead: [Shira](https://github.com/ShiraGam)
 
 ---
 
@@ -274,30 +271,3 @@ Before you start coding, discuss:
 3. **How will you test the driver independently?** Write a test program? Use QEMU gdb?
 4. **Who owns the frame buffer memory?** Kernel or userspace? How is it shared?
 5. **What's your error logging strategy?** stderr? syslog? File?
-
----
-
-## Sign-Off
-
-**Team Name:** _________________________
-
-**Team Members (sign below):**
-
-- _______________________________ (Date: _______)
-- _______________________________ (Date: _______)
-- _______________________________ (Date: _______)
-- _______________________________ (Date: _______)
-
-**Instructor Review:**
-
-- _______________________________ (Approved on: _______)
-
----
-
-## Notes from Instructor Feedback
-
-[Will be filled in after instructor review]
-
----
-
-*Use this document to guide your design discussions. Update it as your understanding evolves. Refer back to it during integration to ensure components match the plan.*

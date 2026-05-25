@@ -428,15 +428,24 @@ static int pfpga_stop_streaming(struct phantomfpga_dev *pfdev)
 static void pfpga_soft_reset(struct phantomfpga_dev *pfdev)
 {
 	/*
-	 * TODO: Trigger soft reset
-	 *
-	 * Steps:
-	 *   1. Write PHANTOMFPGA_CTRL_RESET to CTRL register
-	 *   2. The reset bit is self-clearing - wait briefly (udelay(10))
-	 *   3. Reset local state: streaming=false, all indices=0 (including consumer)
-	 *
+	 * Trigger soft reset
 	 * Note: Reset clears all device state including statistics
 	 */
+
+	/* Write PHANTOMFPGA_CTRL_RESET to CTRL register */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, PHANTOMFPGA_CTRL_RESET);
+
+	/* The reset bit is self-clearing - wait briefly (udelay(10)) */
+	udelay(10);
+
+	/* Reset local state: streaming=false, all indices=0 (including consumer) */
+	pfdev->streaming = false;
+	pfdev->consumer = 0;
+	pfdev->shadow_tail = 0;
+	pfdev->bytes_consumed = 0;
+	pfdev->frames_consumed = 0;
+	pfdev->crc_errors = 0;
+	pfdev->irq_count = 0;
 }
 
 /* ------------------------------------------------------------------------ */
