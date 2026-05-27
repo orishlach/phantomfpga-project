@@ -161,6 +161,9 @@ static const struct pci_device_id phantomfpga_pci_ids[] = {
 };
 MODULE_DEVICE_TABLE(pci, phantomfpga_pci_ids);
 
+/* Forward declarations for functions used in ioctl */
+static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev);
+static int pfpga_alloc_descriptors(struct phantomfpga_dev *pfdev, u32 desc_count, size_t buffer_size);
 /* ------------------------------------------------------------------------ */
 /* Register Access Helpers                                                  */
 /* These helpers provide type-safe register access                          */
@@ -1119,7 +1122,7 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		/* Increment frames_consumed */
 		pfdev->frames_consumed++;
-		pfdev->bytes_consumed += bytes_consumed;
+		pfdev->bytes_consumed += PHANTOMFPGA_FRAME_SIZE;
 
 		/* spin_unlock_irqrestore */
 		spin_unlock_irqrestore(&pfdev->lock, flags);
@@ -1376,7 +1379,6 @@ static void pfpga_teardown_msix(struct phantomfpga_dev *pfdev)
 	pfdev->num_vectors = 0;
 }
 
-static void pfpga_free_descriptors(struct phantomfpga_dev *pfdev); // Forward declaration.
 /*
  * Allocate descriptor ring and per-descriptor buffers.
  */
