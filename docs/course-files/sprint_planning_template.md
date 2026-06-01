@@ -1,4 +1,4 @@
-# Sprint Planning Template
+# Sprint Planning
 
 **Team Name:** [Team Name]
 **Sprint:** [Week 11 / Week 12 / Week 13]
@@ -419,11 +419,3 @@ Fill in this template collaboratively with your team. For each task:
 
 [To be filled in during standup meetings]
 
----
-
-**Approved by:** _________________________ (Instructor)
-**Date:** _________________________
-
----
-
-*Update this document daily during standups. It's your roadmap to success.*
