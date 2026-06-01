@@ -83,26 +83,32 @@ protected:
 	}
 
 	/*
-	 * TODO: Set up memory-mapped DMA buffers
-	 *
-	 * Steps:
-	 * 1. Create a struct phantomfpga_buffer_info (zero-init)
-	 * 2. Call ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_BUFFER_INFO, &info)
-	 * 3. Store info.buffer_size in config_.buffer_size
-	 * 4. Call mmap():
-	 *      void* addr = mmap(nullptr, info.total_size, PROT_READ,
-	 *                        MAP_SHARED, dev_fd_.get(), 0);
-	 * 5. Store the result: buffer_pool_ = MappedMemory(addr, info.total_size);
+	 * Set up memory-mapped DMA buffers
 	 *
 	 * After this, buffer_pool_.get() points to the DMA buffer pool.
 	 * Frame N starts at: (uint8_t*)buffer_pool_.get() + N * config_.buffer_size
 	 */
 	int setup_mmap() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement setup_mmap()\n");
-		return -1;
-		/* --- END YOUR CODE --- */
+		/* 1. Create a struct phantomfpga_buffer_info (zero-init) */
+		phantomfpga_buffer_info info = {};
+
+		/* 2. Call ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_BUFFER_INFO, &info) */
+		int ret = ::ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_BUFFER_INFO, &info);
+		if (ret < 0)
+			return -errno;
+
+		/* 3. Store info.buffer_size in config_.buffer_size */
+		config_.buffer_size = info.buffer_size;
+
+		/* 4. Call mmap() */
+		void *addr = ::mmap(nullptr, info.total_size, PROT_READ, MAP_SHARED, dev_fd_.get(), 0);
+		if (nullptr == addr || MAP_FAILED == addr)
+			return -errno;
+
+		/* 5. Store the result: */
+		buffer_pool_ = MappedMemory(addr, info.total_size);
+		return 0;
 	}
 
 	/*
@@ -149,15 +155,56 @@ protected:
 	 */
 	void main_loop() override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement main_loop()\n");
+		unsigned int desc_index = 0;
 		while (running_)
 		{
 			if (tcp_server_)
 				tcp_server_->try_accept();
-			sleep(1);
+
+			struct pollfd pfd = {
+				.fd = dev_fd_.get(),
+				.events = POLLIN,
+				.revents = 0};
+			int poll_res = poll(&pfd, 1, 100);
+			if (0 == poll_res)
+			{
+				// poll timeout
+				continue;
+			}
+			if (0 > poll_res)
+			{
+				printf("Error polling: %s\n", strerror(errno));
+				continue;
+			}
+
+			uint8_t frame_buf[PHANTOMFPGA_FRAME_SIZE];
+
+			const uint8_t *buffer = (uint8_t *)buffer_pool_.get() + desc_index * config_.buffer_size;
+			const phantomfpga_completion *completion = (phantomfpga_completion *)(buffer + PHANTOMFPGA_FRAME_SIZE);
+			const phantomfpga_frame_header *header = (phantomfpga_frame_header *)(buffer);
+			const uint32_t bytes_read = completion->actual_length;
+			if (PHANTOMFPGA_FRAME_MAGIC != header->magic)
+			{
+				printf("Error: magic is not detecetd: %d\n", desc_index);
+				goto inc;
+			}
+			if (PHANTOMFPGA_COMPL_OK != completion->status)
+			{
+				printf("Error, frame is not complete yet\n");
+				continue;
+			}
+			if (PHANTOMFPGA_FRAME_SIZE != bytes_read)
+			{
+				printf("Error reading frame, frame is too short, size: %d, index: %d\n", bytes_read, desc_index);
+				continue;
+			}
+			memcpy(frame_buf, buffer, bytes_read);
+			printf("Read some frame: %d\n", desc_index);
+			process_frame(frame_buf, bytes_read);
+		inc:
+			ioctl(this->dev_fd_.get(), PHANTOMFPGA_IOCTL_CONSUME_FRAME);
+			desc_index = (desc_index + 1) % PHANTOMFPGA_FRAME_COUNT;
 		}
-		/* --- END YOUR CODE --- */
 	}
 
 	/*
@@ -220,12 +267,32 @@ protected:
 	 */
 	bool validate_frame(const void *frame, uint32_t frame_size) override
 	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement validate_frame()\n");
-		(void)frame;
-		(void)frame_size;
-		return false;
-		/* --- END YOUR CODE --- */
+		bool ret = true;
+		const phantomfpga_frame_header *header = reinterpret_cast<const phantomfpga_frame_header *>(frame);
+
+		if (PHANTOMFPGA_FRAME_MAGIC != header->magic)
+		{
+			stats_.magic_errors++;
+			ret = false;
+		}
+		if (stats_.seq_initialized && header->sequence != (stats_.last_seq + 1) % PHANTOMFPGA_FRAME_COUNT)
+		{
+			stats_.seq_errors++;
+			ret = false;
+		}
+		if (config_.validate_crc)
+		{
+			const uint32_t crc = CRC32::compute(frame, frame_size - 4);
+			if (crc != *reinterpret_cast<const uint32_t *>((uint8_t *)frame + frame_size - 4))
+			{
+				stats_.crc_errors++;
+				ret = false;
+			}
+		}
+
+		stats_.last_seq = header->sequence;
+		stats_.seq_initialized = true;
+		return ret;
 	}
 
 	/*
