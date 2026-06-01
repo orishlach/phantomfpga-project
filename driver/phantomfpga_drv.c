@@ -386,7 +386,7 @@ static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 	pfpga_init_descriptors(pfdev);
 
 	/* Submit all available descriptors */
-	pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1);
+	// pfpga_submit_descriptors(pfdev, pfdev->desc_count - 1);
 
 	/* Clear any pending IRQs */
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ALL);
@@ -680,7 +680,9 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	/* Wait for completed descriptors if blocking */
 	if (!(file->f_flags & O_NONBLOCK))
 	{
+		dev_info_ratelimited(&pfdev->pdev->dev, "Waiting for wait event, consumer: %d, shadow_tail: %d", pfdev->consumer, pfdev->shadow_tail);
 		ret = wait_event_interruptible(pfdev->wait_queue, pfdev->consumer != pfdev->shadow_tail || !pfdev->streaming);
+		dev_info_ratelimited(&pfdev->pdev->dev, "wokeup from wait");
 		/* consumer != shadow_tail means IRQ handler advanced shadow_tail */
 		if (ret)
 			return ret;
@@ -697,12 +699,18 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 
 	/* If cons == compl_tail (nothing to consume) */
 	if (cons == compl_tail)
+	{
+		dev_warn_ratelimited(&pfdev->pdev->dev, "No frame to consume");
 		return -EAGAIN;
+	}
 
 	/* Get the next completed descriptor */
 	desc = &pfdev->desc_ring[cons];
 	if (!(desc->control & PHANTOMFPGA_DESC_CTRL_COMPLETED))
+	{
+		dev_warn_ratelimited(&pfdev->pdev->dev, "Frame is not completed");
 		return -EAGAIN; /* Not actually complete yet */
+	}
 
 	/* Read completion status from buffer end */
 	buffer = pfdev->buffers[cons].vaddr;
