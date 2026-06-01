@@ -27,173 +27,287 @@
 #include "phantomfpga_view.h"
 
 #include <arpa/inet.h>
+#include <iostream>
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <ctime>
+#include <array>
 
-/* ----------------------------------------------------------------------- */
-/* PhantomFpgaViewerImpl: YOUR CODE GOES HERE                              */
-/*                                                                         */
-/* Implement the 7 TODO methods below. The base class handles TCP          */
-/* connection, terminal setup, signal handling, and the main loop.         */
-/* ----------------------------------------------------------------------- */
+ /* ----------------------------------------------------------------------- */
+ /* PhantomFpgaViewerImpl: YOUR CODE GOES HERE                              */
+ /*                                                                         */
+ /* Implement the 7 TODO methods below. The base class handles TCP          */
+ /* connection, terminal setup, signal handling, and the main loop.         */
+ /* ----------------------------------------------------------------------- */
 
-class PhantomFpgaViewerImpl : public PhantomFpgaViewer {
-protected:
+	class PhantomFpgaViewerImpl : public PhantomFpgaViewer {
+	protected:
 
-	/*
-	 * TODO 1: Receive one frame from the server
-	 *
-	 * The wire protocol sends: 4-byte length (network order) + frame data.
-	 *
-	 * Steps:
-	 * 1. Read 4 bytes into a uint32_t using client_.read_exact()
-	 * 2. Convert from network byte order: ntohl()
-	 * 3. Verify the length == frame::SIZE (5120)
-	 * 4. Read frame::SIZE bytes into frame_buffer_.data()
-	 *
-	 * Returns true on success, false on error or disconnect.
-	 *
-	 * Hint: client_.read_exact(buf, len, &running_) handles partial
-	 * reads and EINTR for you.
-	 */
-	bool receive_frame() override
-	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement receive_frame()\n");
-		return false;
+		/*
+		 * TODO 1: Receive one frame from the server
+		 *
+		 * The wire protocol sends: 4-byte length (network order) + frame data.
+		 *
+		 * Steps:
+		 * 1. Read 4 bytes into a uint32_t using client_.read_exact()
+		 * 2. Convert from network byte order: ntohl()
+		 * 3. Verify the length == frame::SIZE (5120)
+		 * 4. Read frame::SIZE bytes into frame_buffer_.data()
+		 *
+		 * Returns true on success, false on error or disconnect.
+		 *
+		 * Hint: client_.read_exact(buf, len, &running_) handles partial
+		 * reads and EINTR for you.
+		 */
+
+		bool receive_frame() override
+		{
+			/* --- YOUR CODE HERE --- */
+			uint32_t length;
+
+			if (!client_.read_exact(reinterpret_cast<uint8_t*>(&length),
+				sizeof(length),
+				&running_))
+			{
+				std::cerr << "Failed to read frame length" << std::endl;
+				return false;
+			}
+
+			length = ntohl(length);
+
+			if (length != frame::SIZE)
+			{
+				std::cerr << "Invalid frame length: " << length
+					<< " (expected " << frame::SIZE << ")" << std::endl;
+				return false;
+			}
+
+			if (!client_.read_exact(frame_buffer_.data(),
+				frame::SIZE,
+				&running_))
+			{
+				std::cerr << "Failed reading the frame" << std::endl;
+				return false;
+			}
+
+			if (!record_path_.empty())
+			{
+				if (record_file_ == nullptr)
+				{
+					record_file_ = fopen(record_path_.c_str(), "wb");
+
+					if (record_file_ == nullptr)
+					{
+						std::cerr << "Failed to open record file" << std::endl;
+					}
+				}
+				if (record_file_ != nullptr)
+				{
+					fwrite(frame_buffer_.data(),
+						1,
+						frame::SIZE,
+						record_file_);
+				}
+
+			}
+
+			return true;
+
+			/* --- END YOUR CODE --- */
+		}
+		/*
+		 * TODO 2: Validate the frame
+		 *
+		 * Check two things:
+		 * 1. Magic number: cast frame_buffer_.data() to a FrameHeader* and
+		 *    check that hdr->magic == frame::MAGIC
+		 *    Increment stats_.magic_errors on failure.
+		 *
+		 * 2. CRC32: compute CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET)
+		 *    Compare with the 4-byte CRC stored at frame::CRC_OFFSET
+		 *    (read it as a uint32_t from frame_buffer_[frame::CRC_OFFSET])
+		 *    Increment stats_.crc_errors on mismatch.
+		 *
+		 * Returns true if valid, false otherwise.
+		 */
+		bool validate_frame() override
+		{
+			const FrameHeader* hdr =
+				reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
+
+			if (hdr->magic != frame::MAGIC)
+			{
+				std::cerr << "Invalid magic" << std::endl;
+				++stats_.magic_errors;
+				return false;
+			}
+
+			const uint32_t crc_res =
+				CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET);
+
+			uint32_t crc_curr;
+			memcpy(&crc_curr,
+				frame_buffer_.data() + frame::CRC_OFFSET,
+				sizeof(uint32_t));
+
+			if (crc_curr != crc_res)
+			{
+				std::cerr << "CRC failed" << std::endl;
+				++stats_.crc_errors;
+				return false;
+			}
+
+			return true;
+		}
+
+		/*
+		 * TODO 3: Check sequence continuity
+		 *
+		 * Detect dropped frames by looking at sequence number gaps.
+		 *
+		 * Steps:
+		 * 1. Get the sequence number from the FrameHeader
+		 * 2. If this isn't the first frame (stats_.last_sequence != -1):
+		 *    a. Calculate expected = (stats_.last_sequence + 1) % frame::COUNT
+		 *    b. If current != expected:
+		 *       dropped = (current - expected + frame::COUNT) % frame::COUNT
+		 *       stats_.frames_dropped += dropped
+		 * 3. Update stats_.last_sequence
+		 */
+		void check_sequence() override
+		{
+			const FrameHeader* header =
+				reinterpret_cast<const FrameHeader*>(frame_buffer_.data());
+
+			if (stats_.last_sequence != -1)
+			{
+				uint32_t expected_seq =
+					(stats_.last_sequence + 1) % frame::COUNT;
+
+				if (header->sequence != expected_seq)
+				{
+					uint32_t dropped =
+						(header->sequence - expected_seq + frame::COUNT) % frame::COUNT;
+
+					stats_.frames_dropped += dropped;
+				}
+			}
+
+			stats_.last_sequence = header->sequence;
+		}
+
+		/*
+		 * TODO 4: Display the frame
+		 *
+		 * The ASCII frame data starts at frame::DATA_OFFSET (16 bytes in)
+		 * and is frame::DATA_SIZE (4995) bytes long. It already contains
+		 * newlines separating the rows, so just dump it to stdout.
+		 *
+		 * Steps:
+		 * 1. Move cursor to top-left: terminal_.cursor_home()
+		 * 2. Write the frame data: fwrite() from frame_buffer_ + DATA_OFFSET
+		 * 3. Flush stdout: fflush(stdout)
+		 */
+		void display_frame() override
+		{
+			terminal_.cursor_home();
+
+			fwrite(
+				frame_buffer_.data() + frame::DATA_OFFSET,
+				1,
+				frame::DATA_SIZE,
+				stdout
+			);
+
+			fflush(stdout);
+		}
+
+		/*
+		 * TODO 5: Frame rate delay
+		 *
+		 * Sleep for 1/fps seconds to maintain the target frame rate.
+		 *
+		 * Steps:
+		 * 1. Calculate delay: 1000000000 / frame::DEFAULT_FPS nanoseconds
+		 * 2. Use nanosleep() with a struct timespec
+		 *
+		 * Example:
+		 *   struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
+		 *   nanosleep(&ts, nullptr);
+		 */
+		void frame_delay() override
+		{
+			/* --- YOUR CODE HERE --- */
+			struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
+			nanosleep(&ts, nullptr);
+			/* --- END YOUR CODE --- */
+		}
+
+		/*
+		 * TODO 6: Print statistics
+		 *
+		 * Print a summary of what happened. Include:
+		 * - stats_.frames_received
+		 * - stats_.frames_dropped
+		 * - stats_.crc_errors
+		 * - stats_.magic_errors
+		 *
+		 * Use fprintf(stderr, ...) so it doesn't interfere with the display.
+		 */
+		void print_stats() override
+		{
+			fprintf(stderr,
+				"Frames received: %lu\n"
+				"Frames dropped: %lu\n"
+				"CRC errors: %lu\n"
+				"Magic errors: %lu\n",
+				stats_.frames_received,
+				stats_.frames_dropped,
+				stats_.crc_errors,
+				stats_.magic_errors);
+
+			if (record_file_ != nullptr)
+			{
+				fclose(record_file_);
+				record_file_ = nullptr;
+			}
+		}
+
+		/*
+		 * TODO 7: Record frames to disk
+		 *
+		 * When the user passes --record FILE, you should save every received
+		 * frame to disk for offline analysis / validation.
+		 *
+		 * The base class already parses --record and stores the filename in
+		 * record_path_ (empty string means recording is disabled).
+		 *
+		 * You need to:
+		 * 1. Add a FILE* member to this class (initialized to nullptr)
+		 * 2. In receive_frame(), AFTER reading the frame into frame_buffer_:
+		 *    a. If record_path_ is empty, skip recording
+		 *    b. If the file isn't open yet, open it:
+		 *       fopen(record_path_.c_str(), "wb")
+		 *    c. Write the raw frame: fwrite(frame_buffer_.data(), 1, frame::SIZE, file)
+		 * 3. In print_stats(), close the file if it was opened
+		 *
+		 * Recording format: raw 5120-byte frames, back to back. No extra
+		 * headers or metadata. This makes offline validation trivial, just
+		 * read 5120-byte chunks and check each one.
+		 *
+		 * Record ALL received frames, even if they later fail validation.
+		 * That's the whole point of a debug recording.
+		 *
+		 * Usage: ./phantomfpga_view localhost 5000 --record stream.bin
+		 */
+
+		 /* --- YOUR CODE HERE (modify receive_frame and print_stats above) --- */
+		 /* Add a FILE* member and integrate recording into existing methods.   */
+		FILE* record_file_ = nullptr;
+		bool record_failed_ = false;
+
 		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 2: Validate the frame
-	 *
-	 * Check two things:
-	 * 1. Magic number: cast frame_buffer_.data() to a FrameHeader* and
-	 *    check that hdr->magic == frame::MAGIC
-	 *    Increment stats_.magic_errors on failure.
-	 *
-	 * 2. CRC32: compute CRC32::compute(frame_buffer_.data(), frame::CRC_OFFSET)
-	 *    Compare with the 4-byte CRC stored at frame::CRC_OFFSET
-	 *    (read it as a uint32_t from frame_buffer_[frame::CRC_OFFSET])
-	 *    Increment stats_.crc_errors on mismatch.
-	 *
-	 * Returns true if valid, false otherwise.
-	 */
-	bool validate_frame() override
-	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement validate_frame()\n");
-		return false;
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 3: Check sequence continuity
-	 *
-	 * Detect dropped frames by looking at sequence number gaps.
-	 *
-	 * Steps:
-	 * 1. Get the sequence number from the FrameHeader
-	 * 2. If this isn't the first frame (stats_.last_sequence != -1):
-	 *    a. Calculate expected = (stats_.last_sequence + 1) % frame::COUNT
-	 *    b. If current != expected:
-	 *       dropped = (current - expected + frame::COUNT) % frame::COUNT
-	 *       stats_.frames_dropped += dropped
-	 * 3. Update stats_.last_sequence
-	 */
-	void check_sequence() override
-	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement check_sequence()\n");
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 4: Display the frame
-	 *
-	 * The ASCII frame data starts at frame::DATA_OFFSET (16 bytes in)
-	 * and is frame::DATA_SIZE (4995) bytes long. It already contains
-	 * newlines separating the rows, so just dump it to stdout.
-	 *
-	 * Steps:
-	 * 1. Move cursor to top-left: terminal_.cursor_home()
-	 * 2. Write the frame data: fwrite() from frame_buffer_ + DATA_OFFSET
-	 * 3. Flush stdout: fflush(stdout)
-	 */
-	void display_frame() override
-	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement display_frame()\n");
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 5: Frame rate delay
-	 *
-	 * Sleep for 1/fps seconds to maintain the target frame rate.
-	 *
-	 * Steps:
-	 * 1. Calculate delay: 1000000000 / frame::DEFAULT_FPS nanoseconds
-	 * 2. Use nanosleep() with a struct timespec
-	 *
-	 * Example:
-	 *   struct timespec ts = { 0, 1000000000 / frame::DEFAULT_FPS };
-	 *   nanosleep(&ts, nullptr);
-	 */
-	void frame_delay() override
-	{
-		/* --- YOUR CODE HERE --- */
-		usleep(1000000 / frame::DEFAULT_FPS); /* placeholder */
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 6: Print statistics
-	 *
-	 * Print a summary of what happened. Include:
-	 * - stats_.frames_received
-	 * - stats_.frames_dropped
-	 * - stats_.crc_errors
-	 * - stats_.magic_errors
-	 *
-	 * Use fprintf(stderr, ...) so it doesn't interfere with the display.
-	 */
-	void print_stats() override
-	{
-		/* --- YOUR CODE HERE --- */
-		fprintf(stderr, "TODO: Implement print_stats()\n");
-		/* --- END YOUR CODE --- */
-	}
-
-	/*
-	 * TODO 7: Record frames to disk
-	 *
-	 * When the user passes --record FILE, you should save every received
-	 * frame to disk for offline analysis / validation.
-	 *
-	 * The base class already parses --record and stores the filename in
-	 * record_path_ (empty string means recording is disabled).
-	 *
-	 * You need to:
-	 * 1. Add a FILE* member to this class (initialized to nullptr)
-	 * 2. In receive_frame(), AFTER reading the frame into frame_buffer_:
-	 *    a. If record_path_ is empty, skip recording
-	 *    b. If the file isn't open yet, open it:
-	 *       fopen(record_path_.c_str(), "wb")
-	 *    c. Write the raw frame: fwrite(frame_buffer_.data(), 1, frame::SIZE, file)
-	 * 3. In print_stats(), close the file if it was opened
-	 *
-	 * Recording format: raw 5120-byte frames, back to back. No extra
-	 * headers or metadata. This makes offline validation trivial, just
-	 * read 5120-byte chunks and check each one.
-	 *
-	 * Record ALL received frames, even if they later fail validation.
-	 * That's the whole point of a debug recording.
-	 *
-	 * Usage: ./phantomfpga_view localhost 5000 --record stream.bin
-	 */
-
-	/* --- YOUR CODE HERE (modify receive_frame and print_stats above) --- */
-	/* Add a FILE* member and integrate recording into existing methods.   */
-	/* --- END YOUR CODE --- */
 };
 
 /* ----------------------------------------------------------------------- */
