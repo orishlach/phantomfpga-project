@@ -359,11 +359,40 @@ static void __maybe_unused pfpga_init_descriptors(struct phantomfpga_dev *pfdev)
 }
 
 /*
+ * Perform soft reset of the device.
+ */
+static void pfpga_soft_reset(struct phantomfpga_dev *pfdev)
+{
+	/*
+	 * Trigger soft reset
+	 *
+	 * Note: Reset clears all device state including statistics
+	 */
+
+	/* Write PHANTOMFPGA_CTRL_RESET to CTRL register */
+	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, PHANTOMFPGA_CTRL_RESET);
+
+	/* The reset bit is self-clearing - wait briefly (udelay(10)) */
+	udelay(10);
+
+	/* Reset local state: streaming=false, all indices=0 (including consumer) */
+	pfdev->streaming = false;
+	pfdev->consumer = 0;
+	pfdev->shadow_tail = 0;
+	pfdev->bytes_consumed = 0;
+	pfdev->frames_consumed = 0;
+	pfdev->crc_errors = 0;
+	pfdev->irq_count = 0;
+}
+
+/*
  * Start frame streaming.
  * Locking: Called with ioctl_lock held
  */
 static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 {
+	unsigned long flags;
+
 	/* Require configured */
 	if (!pfdev->configured)
 		return -EINVAL;
@@ -372,15 +401,21 @@ static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 	if (pfdev->streaming)
 		return -EBUSY;
 
+	pfpga_soft_reset(pfdev);
+	pfpga_apply_config(pfdev);
+	pfpga_configure_desc_ring(pfdev);
+
 	/* Reset indices in driver */
+	spin_lock_irqsave(&pfdev->lock, flags);
 	pfdev->desc_head = 0;
 	pfdev->desc_tail = 0;
 	pfdev->shadow_tail = 0;
 	pfdev->consumer = 0;
+	spin_unlock_irqrestore(&pfdev->lock, flags);
 
 	/* Reset indices in device */
-	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, 0);
-	pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_TAIL, 0);
+	// pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_HEAD, 0);
+	// pfpga_write32(pfdev, PHANTOMFPGA_REG_DESC_TAIL, 0);
 
 	/* Re-initialize descriptors */
 	pfpga_init_descriptors(pfdev);
@@ -391,10 +426,10 @@ static int pfpga_start_streaming(struct phantomfpga_dev *pfdev)
 	/* Clear any pending IRQs */
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_IRQ_STATUS, PHANTOMFPGA_IRQ_ALL);
 
+	pfdev->streaming = true;
+
 	/* Start with interrupts */
 	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, PHANTOMFPGA_CTRL_RUN | PHANTOMFPGA_CTRL_IRQ_EN);
-
-	pfdev->streaming = true;
 
 	return 0;
 }
@@ -423,33 +458,6 @@ static int pfpga_stop_streaming(struct phantomfpga_dev *pfdev)
 	wake_up_interruptible(&pfdev->wait_queue);
 
 	return 0;
-}
-
-/*
- * Perform soft reset of the device.
- */
-static void pfpga_soft_reset(struct phantomfpga_dev *pfdev)
-{
-	/*
-	 * Trigger soft reset
-	 *
-	 * Note: Reset clears all device state including statistics
-	 */
-
-	/* Write PHANTOMFPGA_CTRL_RESET to CTRL register */
-	pfpga_write32(pfdev, PHANTOMFPGA_REG_CTRL, PHANTOMFPGA_CTRL_RESET);
-
-	/* The reset bit is self-clearing - wait briefly (udelay(10)) */
-	udelay(10);
-
-	/* Reset local state: streaming=false, all indices=0 (including consumer) */
-	pfdev->streaming = false;
-	pfdev->consumer = 0;
-	pfdev->shadow_tail = 0;
-	pfdev->bytes_consumed = 0;
-	pfdev->frames_consumed = 0;
-	pfdev->crc_errors = 0;
-	pfdev->irq_count = 0;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -680,9 +688,7 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	/* Wait for completed descriptors if blocking */
 	if (!(file->f_flags & O_NONBLOCK))
 	{
-		dev_info_ratelimited(&pfdev->pdev->dev, "Waiting for wait event, consumer: %d, shadow_tail: %d", pfdev->consumer, pfdev->shadow_tail);
 		ret = wait_event_interruptible(pfdev->wait_queue, pfdev->consumer != pfdev->shadow_tail || !pfdev->streaming);
-		dev_info_ratelimited(&pfdev->pdev->dev, "wokeup from wait");
 		/* consumer != shadow_tail means IRQ handler advanced shadow_tail */
 		if (ret)
 			return ret;
@@ -700,7 +706,6 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	/* If cons == compl_tail (nothing to consume) */
 	if (cons == compl_tail)
 	{
-		dev_warn_ratelimited(&pfdev->pdev->dev, "No frame to consume");
 		return -EAGAIN;
 	}
 
@@ -708,7 +713,6 @@ static ssize_t pfpga_read(struct file *file, char __user *buf,
 	desc = &pfdev->desc_ring[cons];
 	if (!(desc->control & PHANTOMFPGA_DESC_CTRL_COMPLETED))
 	{
-		dev_warn_ratelimited(&pfdev->pdev->dev, "Frame is not completed");
 		return -EAGAIN; /* Not actually complete yet */
 	}
 
@@ -964,7 +968,7 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		{
 			/* Allocate/reallocate descriptor ring and buffers if needed */
 			pfpga_free_descriptors(pfdev);
-			pfpga_alloc_descriptors(pfdev, cfg.desc_count, pfdev->buffer_size);
+			pfpga_alloc_descriptors(pfdev, cfg.desc_count, PHANTOMFPGA_BUFFER_SIZE);
 			pfdev->desc_count = cfg.desc_count;
 		}
 
@@ -1119,7 +1123,9 @@ static long pfpga_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 		if (head == tail)
 		{
-			return -1;
+			spin_unlock_irqrestore(&pfdev->lock, flags);
+			ret = -EAGAIN;
+			break;
 		}
 
 		/* Reset descriptor for reuse */
