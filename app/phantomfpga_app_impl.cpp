@@ -35,6 +35,27 @@
 /* Implement all the TODO methods below to make the app work.              */
 /* The base class handles everything else (CLI, TCP, signals, cleanup).    */
 /* ----------------------------------------------------------------------- */
+static uint32_t read_le32(const void *ptr)
+{
+	const uint8_t *p = static_cast<const uint8_t *>(ptr);
+
+	return ((uint32_t)p[0]) |
+		   ((uint32_t)p[1] << 8) |
+		   ((uint32_t)p[2] << 16) |
+		   ((uint32_t)p[3] << 24);
+}
+
+static size_t page_align_size(size_t value)
+{
+	long page_size = sysconf(_SC_PAGESIZE);
+
+	if (page_size <= 0)
+		page_size = 4096;
+
+	size_t align = static_cast<size_t>(page_size);
+
+	return (value + align - 1) & ~(align - 1);
+}
 
 class PhantomFpgaAppImpl : public PhantomFpgaApp
 {
@@ -90,24 +111,47 @@ protected:
 	 */
 	int setup_mmap() override
 	{
-		/* 1. Create a struct phantomfpga_buffer_info (zero-init) */
 		phantomfpga_buffer_info info = {};
 
-		/* 2. Call ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_BUFFER_INFO, &info) */
 		int ret = ::ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_GET_BUFFER_INFO, &info);
 		if (ret < 0)
 			return -errno;
 
-		/* 3. Store info.buffer_size in config_.buffer_size */
-		config_.buffer_size = info.buffer_size;
+		/*
+		 * info.buffer_size is the real DMA buffer size, usually:
+		 * 5120 frame bytes + 16 completion bytes = 5136.
+		 *
+		 * But the mmap implementation maps each buffer at a page-aligned stride.
+		 * So userspace must step by PAGE_ALIGN(buffer_size), not buffer_size.
+		 */
+		size_t stride = page_align_size(static_cast<size_t>(info.buffer_size));
+		size_t mmap_size = stride * static_cast<size_t>(info.buffer_count);
 
-		/* 4. Call mmap() */
-		void *addr = ::mmap(nullptr, info.total_size, PROT_READ, MAP_SHARED, dev_fd_.get(), 0);
-		if (nullptr == addr || MAP_FAILED == addr)
+		config_.buffer_size = static_cast<uint32_t>(stride);
+		config_.desc_count = static_cast<uint32_t>(info.buffer_count);
+
+		void *addr = ::mmap(nullptr,
+							mmap_size,
+							PROT_READ | PROT_WRITE,
+							MAP_SHARED,
+							dev_fd_.get(),
+							0);
+
+		if (addr == MAP_FAILED)
 			return -errno;
 
-		/* 5. Store the result: */
-		buffer_pool_ = MappedMemory(addr, info.total_size);
+		buffer_pool_ = MappedMemory(addr, mmap_size);
+
+		if (config_.verbose)
+		{
+			std::fprintf(stderr,
+						 "[*] mmap: raw_buffer_size=%llu stride=%zu count=%llu mmap_size=%zu\n",
+						 static_cast<unsigned long long>(info.buffer_size),
+						 stride,
+						 static_cast<unsigned long long>(info.buffer_count),
+						 mmap_size);
+		}
+
 		return 0;
 	}
 
@@ -155,7 +199,8 @@ protected:
 	 */
 	void main_loop() override
 	{
-		unsigned int desc_index = 0;
+		uint32_t desc_index = 0;
+
 		while (running_)
 		{
 			if (tcp_server_)
@@ -165,45 +210,118 @@ protected:
 				.fd = dev_fd_.get(),
 				.events = POLLIN,
 				.revents = 0};
-			int poll_res = poll(&pfd, 1, 100);
-			if (0 == poll_res)
+
+			int poll_res = ::poll(&pfd, 1, 100);
+
+			if (poll_res == 0)
+				continue;
+
+			if (poll_res < 0)
 			{
-				// poll timeout
+				if (errno == EINTR)
+					continue;
+
+				std::fprintf(stderr, "Error polling: %s\n", strerror(errno));
 				continue;
 			}
-			if (0 > poll_res)
+
+			if (pfd.revents & (POLLERR | POLLNVAL))
 			{
-				printf("Error polling: %s\n", strerror(errno));
+				std::fprintf(stderr, "Poll returned error revents=0x%x\n", pfd.revents);
 				continue;
 			}
+
+			if (!(pfd.revents & POLLIN))
+				continue;
 
 			uint8_t frame_buf[PHANTOMFPGA_FRAME_SIZE];
 
-			const uint8_t *buffer = (uint8_t *)buffer_pool_.get() + desc_index * config_.buffer_size;
-			const phantomfpga_completion *completion = (phantomfpga_completion *)(buffer + PHANTOMFPGA_FRAME_SIZE);
-			const phantomfpga_frame_header *header = (phantomfpga_frame_header *)(buffer);
-			const uint32_t bytes_read = completion->actual_length;
-			if (PHANTOMFPGA_FRAME_MAGIC != header->magic)
+			if (config_.zero_copy)
 			{
-				printf("Error: magic is not detecetd: %d\n", desc_index);
-				goto inc;
+				/*
+				 * Zero-copy path:
+				 * frame is read directly from mmap'd DMA buffer.
+				 */
+				const uint8_t *buffer =
+					static_cast<const uint8_t *>(buffer_pool_.get()) +
+					static_cast<size_t>(desc_index) * config_.buffer_size;
+
+				const phantomfpga_completion *completion =
+					reinterpret_cast<const phantomfpga_completion *>(
+						buffer + PHANTOMFPGA_FRAME_SIZE);
+
+				uint32_t completion_status = read_le32(&completion->status);
+				uint32_t actual_length = read_le32(&completion->actual_length);
+
+				if (completion_status != PHANTOMFPGA_COMPL_OK)
+				{
+					std::fprintf(stderr,
+								 "Error: descriptor %u completion status=0x%x\n",
+								 desc_index,
+								 completion_status);
+
+					::ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_CONSUME_FRAME);
+					desc_index = (desc_index + 1) % config_.desc_count;
+					continue;
+				}
+
+				if (actual_length != PHANTOMFPGA_FRAME_SIZE)
+				{
+					std::fprintf(stderr,
+								 "Error: descriptor %u short frame, actual_length=%u\n",
+								 desc_index,
+								 actual_length);
+
+					::ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_CONSUME_FRAME);
+					desc_index = (desc_index + 1) % config_.desc_count;
+					continue;
+				}
+
+				std::memcpy(frame_buf, buffer, PHANTOMFPGA_FRAME_SIZE);
+
+				int ret = ::ioctl(dev_fd_.get(), PHANTOMFPGA_IOCTL_CONSUME_FRAME);
+				if (ret < 0)
+				{
+					std::fprintf(stderr,
+								 "Error: CONSUME_FRAME failed: %s\n",
+								 strerror(errno));
+					continue;
+				}
+
+				desc_index = (desc_index + 1) % config_.desc_count;
+
+				process_frame(frame_buf, PHANTOMFPGA_FRAME_SIZE);
 			}
-			if (PHANTOMFPGA_COMPL_OK != completion->status)
+			else
 			{
-				printf("Error, frame is not complete yet\n");
-				continue;
+				/*
+				 * Normal read path:
+				 * driver copies one full frame to userspace.
+				 */
+				ssize_t n = ::read(dev_fd_.get(), frame_buf, sizeof(frame_buf));
+
+				if (n < 0)
+				{
+					if (errno == EAGAIN)
+						continue;
+
+					std::fprintf(stderr,
+								 "Error reading frame: %s\n",
+								 strerror(errno));
+					continue;
+				}
+
+				if (n != PHANTOMFPGA_FRAME_SIZE)
+				{
+					std::fprintf(stderr,
+								 "Error reading frame: expected %u bytes, got %zd\n",
+								 PHANTOMFPGA_FRAME_SIZE,
+								 n);
+					continue;
+				}
+
+				process_frame(frame_buf, static_cast<uint32_t>(n));
 			}
-			if (PHANTOMFPGA_FRAME_SIZE != bytes_read)
-			{
-				printf("Error reading frame, frame is too short, size: %d, index: %d\n", bytes_read, desc_index);
-				continue;
-			}
-			memcpy(frame_buf, buffer, bytes_read);
-			printf("Read some frame: %d\n", desc_index);
-			process_frame(frame_buf, bytes_read);
-		inc:
-			ioctl(this->dev_fd_.get(), PHANTOMFPGA_IOCTL_CONSUME_FRAME);
-			desc_index = (desc_index + 1) % PHANTOMFPGA_FRAME_COUNT;
 		}
 	}
 
@@ -212,25 +330,13 @@ protected:
 	 */
 	int process_frame(const void *buffer, uint32_t len) override
 	{
-		/* Check the frame */
 		bool valid = validate_frame(buffer, len);
 
-		/* Increment stats_.frames_received */
 		stats_.frames_received++;
 
-		/* If valid */
 		if (valid)
-		{
 			stats_.frames_valid++;
-		}
 
-		/* If tcp_server_ has a client */
-		if (tcp_server_)
-		{
-			tcp_server_->send_frame(buffer, len);
-		}
-
-		/* If config_.verbose: print frame info */
 		if (config_.verbose)
 		{
 			std::fprintf(stderr,
@@ -240,7 +346,14 @@ protected:
 						 valid ? "valid" : "invalid");
 		}
 
-		/* Returns 0 on success */
+		/*
+		 * Send only valid frames to the viewer.
+		 * TcpServer::send_frame already sends the 4-byte network-order length
+		 * and then the frame data.
+		 */
+		if (valid && tcp_server_ && tcp_server_->has_client())
+			tcp_server_->send_frame(buffer, len);
+
 		return 0;
 	}
 
@@ -267,32 +380,60 @@ protected:
 	 */
 	bool validate_frame(const void *frame, uint32_t frame_size) override
 	{
-		bool ret = true;
-		const phantomfpga_frame_header *header = reinterpret_cast<const phantomfpga_frame_header *>(frame);
+		if (!frame || frame_size != PHANTOMFPGA_FRAME_SIZE)
+		{
+			return false;
+		}
 
-		if (PHANTOMFPGA_FRAME_MAGIC != header->magic)
+		const uint8_t *bytes = static_cast<const uint8_t *>(frame);
+
+		uint32_t magic = read_le32(bytes + 0);
+		uint32_t seq = read_le32(bytes + 4);
+
+		bool valid = true;
+
+		if (magic != PHANTOMFPGA_FRAME_MAGIC)
 		{
 			stats_.magic_errors++;
-			ret = false;
+			valid = false;
 		}
-		if (stats_.seq_initialized && header->sequence != (stats_.last_seq + 1) % PHANTOMFPGA_FRAME_COUNT)
+
+		if (seq >= PHANTOMFPGA_FRAME_COUNT)
 		{
 			stats_.seq_errors++;
-			ret = false;
+			valid = false;
 		}
-		if (config_.validate_crc)
+
+		if (valid && stats_.seq_initialized)
 		{
-			const uint32_t crc = CRC32::compute(frame, frame_size - 4);
-			if (crc != *reinterpret_cast<const uint32_t *>((uint8_t *)frame + frame_size - 4))
+			uint32_t expected = (stats_.last_seq + 1) % PHANTOMFPGA_FRAME_COUNT;
+
+			if (seq != expected)
 			{
-				stats_.crc_errors++;
-				ret = false;
+				stats_.seq_errors++;
+				valid = false;
 			}
 		}
 
-		stats_.last_seq = header->sequence;
-		stats_.seq_initialized = true;
-		return ret;
+		if (config_.validate_crc)
+		{
+			uint32_t computed_crc = CRC32::compute(frame, PHANTOMFPGA_FRAME_SIZE - 4);
+			uint32_t stored_crc = read_le32(bytes + PHANTOMFPGA_FRAME_SIZE - 4);
+
+			if (computed_crc != stored_crc)
+			{
+				stats_.crc_errors++;
+				valid = false;
+			}
+		}
+
+		if (valid)
+		{
+			stats_.last_seq = seq;
+			stats_.seq_initialized = true;
+		}
+
+		return valid;
 	}
 
 	/*
